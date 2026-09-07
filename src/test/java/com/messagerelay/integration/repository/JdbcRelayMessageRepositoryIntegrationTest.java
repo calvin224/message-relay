@@ -17,7 +17,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@Testcontainers
+@Testcontainers(disabledWithoutDocker = true)
 class JdbcRelayMessageRepositoryIntegrationTest {
 
     @Container
@@ -30,7 +30,8 @@ class JdbcRelayMessageRepositoryIntegrationTest {
     private RelayMessageRepository repository;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp()
+            throws Exception {
 
         try (
                 Connection connection =
