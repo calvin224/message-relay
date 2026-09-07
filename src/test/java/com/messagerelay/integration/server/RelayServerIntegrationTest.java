@@ -30,7 +30,7 @@ class RelayServerIntegrationTest {
 
     @Test
     @Timeout(5)
-    void given_running_server_when_stopped_then_server_shuts_down_cleanly()
+    void given_active_client_when_server_stops_then_client_is_disconnected_and_server_shuts_down_cleanly()
             throws Exception {
 
         int port =
@@ -48,17 +48,30 @@ class RelayServerIntegrationTest {
                         serverFailure
                 );
 
-        /*
-         * Establishing a real TCP connection proves
-         * that the server has bound the port and is
-         * accepting clients.
-         */
-        try (Socket ignored =
+        try (Socket client =
                      connectWhenAvailable(port)) {
-            // Connection is only used as a readiness check.
-        }
 
-        relayServer.stop();
+            /*
+             * Registering proves the connection has
+             * been accepted and a ClientSession is
+             * actively running on the server.
+             */
+            registerClient(
+                    client,
+                    "alice"
+            );
+
+            relayServer.stop();
+
+            /*
+             * The server closes active client sockets
+             * during shutdown, so the client sees EOF.
+             */
+            assertEquals(
+                    -1,
+                    client.getInputStream().read()
+            );
+        }
 
         serverThread.join(2_000);
 
