@@ -18,8 +18,12 @@ import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.Socket;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 
 public class ClientSession implements Runnable {
+
+    private static final int MAX_OUTBOUND_MESSAGES = 100;
 
     private final Socket socket;
     private final ClientRegistry clientRegistry;
@@ -30,6 +34,11 @@ public class ClientSession implements Runnable {
 
     private final ProtocolCodec protocolCodec =
             new ProtocolCodec();
+
+    private final BlockingQueue<Object> outboundMessages =
+            new ArrayBlockingQueue<>(
+                    MAX_OUTBOUND_MESSAGES
+            );
 
     private String registeredClientId;
 
@@ -45,6 +54,9 @@ public class ClientSession implements Runnable {
 
     @Override
     public void run() {
+
+        Thread writerThread = null;
+
         try (
                 socket;
                 DataInputStream input =
@@ -56,6 +68,12 @@ public class ClientSession implements Runnable {
                                 socket.getOutputStream()
                         )
         ) {
+
+            writerThread =
+                    Thread.ofVirtual().start(
+                            () -> writeLoop(output)
+                    );
+
             while (!socket.isClosed()) {
 
                 String json =
@@ -70,24 +88,17 @@ public class ClientSession implements Runnable {
                         RegisterCommand command =
                                 protocolCodec.decodeRegister(json);
 
-                        handleRegister(
-                                command,
-                                output
-                        );
+                        handleRegister(command);
                     }
 
                     case SEND -> {
                         SendCommand command =
                                 protocolCodec.decodeSend(json);
 
-                        handleSend(
-                                command,
-                                output
-                        );
+                        handleSend(command);
                     }
 
                     default -> sendError(
-                            output,
                             ErrorCode.INVALID_MESSAGE_TYPE,
                             "Unsupported message type: " + type
                     );
@@ -110,6 +121,10 @@ public class ClientSession implements Runnable {
 
         } finally {
 
+            if (writerThread != null) {
+                writerThread.interrupt();
+            }
+
             if (registeredClientId != null) {
                 clientRegistry.disconnect(
                         registeredClientId,
@@ -119,15 +134,54 @@ public class ClientSession implements Runnable {
         }
     }
 
-    private void handleRegister(
-            RegisterCommand command,
+    public boolean enqueueOutbound(
+            Object message
+    ) {
+
+        boolean queued =
+                outboundMessages.offer(message);
+
+        if (!queued) {
+            closeSocket();
+        }
+
+        return queued;
+    }
+
+    private void writeLoop(
             DataOutputStream output
-    ) throws IOException {
+    ) {
+
+        try {
+
+            while (!Thread.currentThread().isInterrupted()) {
+
+                Object message =
+                        outboundMessages.take();
+
+                frameCodec.writeFrame(
+                        output,
+                        protocolCodec.encode(message)
+                );
+            }
+
+        } catch (InterruptedException e) {
+
+            Thread.currentThread().interrupt();
+
+        } catch (IOException e) {
+
+            closeSocket();
+        }
+    }
+
+    private void handleRegister(
+            RegisterCommand command
+    ) {
 
         if (registeredClientId != null) {
 
             sendError(
-                    output,
                     ErrorCode.ALREADY_REGISTERED,
                     "This connection is already registered"
             );
@@ -144,7 +198,6 @@ public class ClientSession implements Runnable {
         if (!registered) {
 
             sendError(
-                    output,
                     ErrorCode.IDENTITY_IN_USE,
                     "Client identity is already connected"
             );
@@ -166,16 +219,12 @@ public class ClientSession implements Runnable {
                         registeredClientId
                 );
 
-        frameCodec.writeFrame(
-                output,
-                protocolCodec.encode(response)
-        );
+        enqueueOutbound(response);
     }
 
     private void handleSend(
-            SendCommand command,
-            DataOutputStream output
-    ) throws IOException {
+            SendCommand command
+    ) {
 
         if (registeredClientId == null) {
 
@@ -187,11 +236,7 @@ public class ClientSession implements Runnable {
                             "Connection must register before sending"
                     );
 
-            frameCodec.writeFrame(
-                    output,
-                    protocolCodec.encode(response)
-            );
-
+            enqueueOutbound(response);
             return;
         }
 
@@ -214,17 +259,13 @@ public class ClientSession implements Runnable {
                         result.reason()
                 );
 
-        frameCodec.writeFrame(
-                output,
-                protocolCodec.encode(response)
-        );
+        enqueueOutbound(response);
     }
 
     private void sendError(
-            DataOutputStream output,
             ErrorCode code,
             String message
-    ) throws IOException {
+    ) {
 
         ErrorEvent error =
                 new ErrorEvent(
@@ -233,9 +274,19 @@ public class ClientSession implements Runnable {
                         message
                 );
 
-        frameCodec.writeFrame(
-                output,
-                protocolCodec.encode(error)
-        );
+        enqueueOutbound(error);
+    }
+
+    private void closeSocket() {
+
+        if (socket == null || socket.isClosed()) {
+            return;
+        }
+
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+            // Socket is already being closed.
+        }
     }
 }
