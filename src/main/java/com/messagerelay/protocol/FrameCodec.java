@@ -44,6 +44,23 @@ public class FrameCodec {
             String message
     ) throws IOException {
 
+        byte[] payload = encodePayload(message);
+
+        output.writeInt(payload.length);
+        output.write(payload);
+        output.flush();
+    }
+
+    public void validateFrame(
+            String message
+    ) throws IOException {
+        encodePayload(message);
+    }
+
+    private byte[] encodePayload(
+            String message
+    ) throws IOException {
+
         byte[] payload =
                 message.getBytes(
                         StandardCharsets.UTF_8
@@ -55,8 +72,6 @@ public class FrameCodec {
             );
         }
 
-        output.writeInt(payload.length);
-        output.write(payload);
-        output.flush();
+        return payload;
     }
 }

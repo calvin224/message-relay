@@ -6,6 +6,23 @@ The implementation supports registration, addressed messaging, explicit acknowle
 
 See [APPROACH.md](APPROACH.md) for acceptance criteria, the wire protocol, concurrency decisions, test boundaries, and a prioritised completion plan.
 
+## Implementation progress
+
+**Latest completed step: reject messages that cannot fit in a delivery frame.** Previously, a SEND could fit the 65,536-byte limit, but adding the sender ID to DELIVERY could push it over that limit. The server would accept and retain the message, then close the recipient connection when delivery failed. Reconnecting would encounter the same undeliverable message again.
+
+The server now checks the final DELIVERY size before accepting the message. An oversized delivery is rejected without consuming mailbox space or reserving its ID. A delivery exactly at the limit still works. This addresses the exercise requirements for message-size bounds and explicit send acceptance/rejection.
+
+| Area | Progress |
+| --- | --- |
+| Registration, send, delivery, ACK, offline retention, reconnect | Implemented; core scenarios covered by tests |
+| Delivery-size validation | Implemented and regression-tested; 29 test cases pass and the executable JAR builds |
+| Retained identities and aggregate memory | Next: cap retained identities while preserving existing clients and queued messages |
+| Deadlines, shutdown, concurrency edge cases | Further core work required |
+| Complete terminal demonstration | Planned: send, receive, explicit ACK, disconnect, and reconnect |
+| FIFO, Docker, restart persistence | Optional extensions after the core requirements |
+
+See [the fix rationale](APPROACH.md#completed-step-delivery-size-validation) and [remaining work](APPROACH.md#remaining-work-in-priority-order) for details. This progress describes the current implementation, not a claim that every exercise requirement is complete.
+
 ## Prerequisites
 
 - JDK 25, with `JAVA_HOME` pointing to the JDK and its `bin` directory on `PATH`.
@@ -98,13 +115,15 @@ There are currently no configuration files, environment overrides, or server com
 
 Limits are source constants in `FrameCodec`, `Mailbox`, `RelayServer`, and `ClientSession`. Changing them currently requires rebuilding. The two-second executor wait is not an end-to-end shutdown deadline, and writer threads are interrupted rather than explicitly joined.
 
+Before accepting a registered `SEND`, the server checks the complete encoded `DELIVERY` against the same 65,536-byte limit used by the frame writer. This includes the sender ID, UTF-8 encoding, and JSON escaping. Oversized deliveries return `SEND_RESULT` with `accepted:false` and reason `Delivery frame exceeds maximum size`, without storing a message or reserving its ID. A delivery exactly at the limit is accepted if the recipient and mailbox checks also pass.
+
 All identities, queued messages, and pending message IDs are lost when the process exits. There is no recovery across server restarts. An occupied port produces `BindException`; free port 9000 before launching, or change the source and rebuild both entry points as needed.
 
 ## Current limitations
 
 - The number of retained identities and aggregate mailbox memory are not capped. Per-mailbox and connection limits do not provide a whole-server memory bound.
 - Idle or partial-frame connections have no deadline and can occupy all connection slots. Slow-reader isolation uses per-session writers and bounded queues, but has no write deadline.
-- Accepted input can produce an oversized `DELIVERY` frame, because the registered sender ID is added later. Such a message can remain pending while delivery repeatedly closes the recipient connection.
+- Identity and message-ID lengths have no independent caps. Boundary validation for other server response shapes remains to be completed.
 - Strict FIFO is not guaranteed under concurrent sends/reconnects. Redelivery happens on registration, with no timed retry on an existing connection.
 - Message IDs are globally unique only while pending. Reuse after ACK is permitted; a stale ACK can then remove a newer message with the same ID for that recipient.
 - The executable lacks a shutdown hook, and the sample client does not demonstrate the complete exchange interactively.
@@ -127,8 +146,8 @@ docker run --rm --name message-relay -p 127.0.0.1:9000:9000 message-relay:local
 
 ## Verification record
 
-Local validation against implementation revision `697cc64`:
+Local validation of the delivery-size fix:
 
-- Windows, JDK 25, Maven 3.9.16: `.\mvnw.cmd --batch-mode --no-transfer-progress clean verify` and the equivalent installed-Maven command passed, producing the executable JAR and coverage report.
-- `.\mvnw.cmd --batch-mode --no-transfer-progress test` passed: **26 tests, zero failures/errors/skips**.
-- Launching the packaged server reached socket binding but failed because local port 9000 was occupied. A successful packaged server/client smoke run remains to be repeated with that port free. Automated socket tests passed on temporary ports.
+- Windows, JDK 25, Maven 3.9.16: `.\mvnw.cmd --batch-mode --no-transfer-progress clean verify` passed, producing the executable JAR and coverage report: **29 tests, zero failures/errors/skips**.
+- The three new regression cases failed before the fix and passed afterwards. They cover ASCII, multibyte UTF-8, and JSON escaping, including rejection without mailbox/ID retention and delivery/ACK at the exact frame limit.
+- An earlier packaged-server launch reached socket binding but failed because local port 9000 was occupied. A successful packaged server/client smoke run remains to be repeated with that port free. Automated socket tests passed on temporary ports.

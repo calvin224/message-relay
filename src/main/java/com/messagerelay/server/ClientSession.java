@@ -211,16 +211,18 @@ public class ClientSession implements Runnable {
     public boolean deliver(
             RelayMessage message
     ) {
+        return enqueueOutbound(createDelivery(message));
+    }
 
-        DeliveryEvent delivery =
-                new DeliveryEvent(
-                        MessageType.DELIVERY,
-                        message.messageId(),
-                        message.senderId(),
-                        message.body()
-                );
-
-        return enqueueOutbound(delivery);
+    private DeliveryEvent createDelivery(
+            RelayMessage message
+    ) {
+        return new DeliveryEvent(
+                MessageType.DELIVERY,
+                message.messageId(),
+                message.senderId(),
+                message.body()
+        );
     }
 
     private void writeLoop(
@@ -312,7 +314,7 @@ public class ClientSession implements Runnable {
 
     private void handleSend(
             SendCommand command
-    ) {
+    ) throws JsonProcessingException {
 
         if (isBlank(command.messageId())) {
 
@@ -366,6 +368,21 @@ public class ClientSession implements Runnable {
                         command.recipientId(),
                         command.body()
                 );
+
+        String deliveryJson =
+                protocolCodec.encode(createDelivery(message));
+
+        try {
+            frameCodec.validateFrame(deliveryJson);
+        } catch (IOException e) {
+            enqueueOutbound(new SendResultEvent(
+                    MessageType.SEND_RESULT,
+                    command.messageId(),
+                    false,
+                    "Delivery frame exceeds maximum size"
+            ));
+            return;
+        }
 
         SendResult result =
                 relayService.send(message);
