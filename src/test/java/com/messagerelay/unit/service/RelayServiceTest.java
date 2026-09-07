@@ -137,4 +137,98 @@ class RelayServiceTest {
                         .size()
         );
     }
+
+    @Test
+    void rejectsMessageWhenRecipientMailboxIsFull() {
+
+        ClientRegistry clientRegistry =
+                new ClientRegistry();
+
+        RelayService relayService =
+                new RelayService(
+                        clientRegistry
+                );
+
+        ClientSession bobSession =
+                new ClientSession(
+                        null,
+                        clientRegistry,
+                        relayService
+                );
+
+        clientRegistry.register(
+                "bob",
+                bobSession
+        );
+
+        /*
+         * Fill Bob's bounded mailbox.
+         */
+        for (int i = 0; i < 100; i++) {
+
+            RelayMessage message =
+                    new RelayMessage(
+                            "msg-" + i,
+                            "alice",
+                            "bob",
+                            "message-" + i
+                    );
+
+            SendResult result =
+                    relayService.send(message);
+
+            assertTrue(
+                    result.accepted()
+            );
+        }
+
+        assertEquals(
+                100,
+                clientRegistry
+                        .getClient("bob")
+                        .getMailbox()
+                        .size()
+        );
+
+        /*
+         * The next message exceeds the mailbox limit.
+         */
+        RelayMessage overflowMessage =
+                new RelayMessage(
+                        "msg-overflow",
+                        "alice",
+                        "bob",
+                        "too many messages"
+                );
+
+        SendResult result =
+                relayService.send(
+                        overflowMessage
+                );
+
+        assertFalse(
+                result.accepted()
+        );
+
+        assertEquals(
+                "msg-overflow",
+                result.messageId()
+        );
+
+        assertEquals(
+                "Recipient mailbox is full",
+                result.reason()
+        );
+
+        /*
+         * The rejected message was not stored.
+         */
+        assertEquals(
+                100,
+                clientRegistry
+                        .getClient("bob")
+                        .getMailbox()
+                        .size()
+        );
+    }
 }
