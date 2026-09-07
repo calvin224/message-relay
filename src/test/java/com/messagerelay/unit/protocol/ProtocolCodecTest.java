@@ -14,6 +14,7 @@ class ProtocolCodecTest {
     private final ProtocolCodec protocolCodec =
             new ProtocolCodec();
 
+    // Protocol schema: registration commands serialize and deserialize symmetrically.
     @Test
     void given_register_command_when_encoding_and_decoding_then_original_command_is_returned() throws Exception {
         RegisterCommand command =
@@ -30,6 +31,7 @@ class ProtocolCodecTest {
         assertEquals(command, decoded);
     }
 
+    // Protocol schema: documented registration JSON maps to the command model.
     @Test
     void given_register_json_when_decoding_register_command_then_command_fields_match() throws Exception {
         String json = readResource("protocol/register.json");
@@ -48,6 +50,7 @@ class ProtocolCodecTest {
         );
     }
 
+    // Protocol dispatch: the type field selects the addressed-send operation.
     @Test
     void given_send_json_when_decoding_message_type_then_send_type_is_returned() throws Exception {
         String json = readResource("protocol/send.json");
@@ -61,6 +64,7 @@ class ProtocolCodecTest {
         );
     }
 
+    // Protocol schema: sender-provided ID, recipient, and body survive decoding.
     @Test
     void given_send_json_when_decoding_send_command_then_command_fields_match() throws Exception {
         String json = readResource("protocol/send.json");

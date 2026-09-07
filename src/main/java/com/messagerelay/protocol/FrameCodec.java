@@ -1,5 +1,7 @@
 package com.messagerelay.protocol;
 
+import com.messagerelay.config.RelayLimits;
+
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -9,16 +11,14 @@ import java.nio.charset.StandardCharsets;
 
 public class FrameCodec {
 
-    private static final int MAX_FRAME_SIZE =
-            64 * 1024;
-
     public String readFrame(
             DataInputStream input
     ) throws IOException {
 
         int length = input.readInt();
 
-        if (length <= 0 || length > MAX_FRAME_SIZE) {
+        if (length <= 0
+                || length > RelayLimits.MAX_FRAME_BYTES) {
             throw new IOException(
                     "Invalid frame length: " + length
             );
@@ -49,7 +49,8 @@ public class FrameCodec {
                         StandardCharsets.UTF_8
                 );
 
-        if (payload.length > MAX_FRAME_SIZE) {
+        if (payload.length
+                > RelayLimits.MAX_FRAME_BYTES) {
             throw new IOException(
                     "Frame too large"
             );

@@ -7,6 +7,7 @@ import com.messagerelay.server.ClientContext;
 import com.messagerelay.server.ClientRegistry;
 import com.messagerelay.server.ClientSession;
 import com.messagerelay.server.RelayServer;
+import com.messagerelay.server.RegistrationResult;
 import com.messagerelay.service.RelayService;
 
 import java.io.DataInputStream;
@@ -20,7 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public final class TestUtils {
 
@@ -105,7 +106,8 @@ public final class TestUtils {
                         relayService
                 );
 
-        assertTrue(
+        assertEquals(
+                RegistrationResult.REGISTERED,
                 clientRegistry.register(
                         clientId,
                         session

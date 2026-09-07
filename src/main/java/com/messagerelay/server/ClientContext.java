@@ -1,7 +1,8 @@
 package com.messagerelay.server;
 
-import java.util.concurrent.locks.ReentrantLock;
 import com.messagerelay.server.mailbox.Mailbox;
+
+import java.util.concurrent.locks.ReentrantLock;
 
 public class ClientContext {
 
@@ -14,6 +15,8 @@ public class ClientContext {
             new Mailbox();
 
     private ClientSession activeSession;
+
+    private boolean replayingPendingMessages;
 
     public ClientContext(String clientId) {
         this.clientId = clientId;
@@ -39,5 +42,16 @@ public class ClientContext {
             ClientSession activeSession
     ) {
         this.activeSession = activeSession;
+    }
+
+    public boolean isReplayingPendingMessages() {
+        return replayingPendingMessages;
+    }
+
+    public void setReplayingPendingMessages(
+            boolean replayingPendingMessages
+    ) {
+        this.replayingPendingMessages =
+                replayingPendingMessages;
     }
 }

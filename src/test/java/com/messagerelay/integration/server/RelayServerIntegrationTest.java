@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 class RelayServerIntegrationTest {
 
+    // Lifecycle requirement: shutdown closes clients and terminates the server predictably.
     @Test
     @Timeout(5)
     void given_active_client_when_server_stops_then_client_is_disconnected_and_server_shuts_down_cleanly()
@@ -84,6 +85,7 @@ class RelayServerIntegrationTest {
         );
     }
 
+    // Resource bound: the server rejects connections beyond the active-client limit.
     @Test
     @Timeout(10)
     void given_active_connection_limit_reached_when_client_connects_then_connection_is_rejected()
@@ -213,6 +215,51 @@ class RelayServerIntegrationTest {
         assertNull(
                 serverFailure.get()
         );
+    }
+
+    // Slow-client isolation: a connection that never registers is closed after the configured deadline.
+    @Test
+    @Timeout(5)
+    void given_client_does_not_register_when_deadline_expires_then_connection_closes_and_server_remains_usable()
+            throws Exception {
+        int port = findFreePort();
+        RelayServer relayServer =
+                new RelayServer(port, 100);
+        AtomicReference<Throwable> serverFailure =
+                new AtomicReference<>();
+        Thread serverThread =
+                startServer(
+                        relayServer,
+                        serverFailure
+                );
+
+        try {
+            try (Socket silentClient =
+                         connectWhenAvailable(port)) {
+                assertEquals(
+                        -1,
+                        silentClient.getInputStream().read()
+                );
+            }
+
+            try (Socket healthyClient =
+                         new Socket(
+                                 "localhost",
+                                 port
+                         )) {
+                registerClient(
+                        healthyClient,
+                        "alice"
+                );
+            }
+
+        } finally {
+            relayServer.stop();
+            serverThread.join(2_000);
+        }
+
+        assertFalse(serverThread.isAlive());
+        assertNull(serverFailure.get());
     }
 
     private void registerClient(

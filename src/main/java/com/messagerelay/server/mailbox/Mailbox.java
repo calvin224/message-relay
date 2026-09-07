@@ -1,5 +1,6 @@
 package com.messagerelay.server.mailbox;
 
+import com.messagerelay.config.RelayLimits;
 import com.messagerelay.domain.RelayMessage;
 
 import java.util.ArrayDeque;
@@ -8,15 +9,14 @@ import java.util.List;
 
 public class Mailbox {
 
-    private static final int MAX_MESSAGES = 100;
-
     private final Deque<RelayMessage> messages =
             new ArrayDeque<>();
 
     public boolean add(
             RelayMessage message
     ) {
-        if (messages.size() >= MAX_MESSAGES) {
+        if (messages.size()
+                >= RelayLimits.MAX_MAILBOX_MESSAGES) {
             return false;
         }
 
@@ -29,12 +29,12 @@ public class Mailbox {
     }
 
     public boolean acknowledge(
-            String messageId
+            String deliveryId
     ) {
         return messages.removeIf(
                 message ->
-                        message.messageId()
-                                .equals(messageId)
+                        message.deliveryId()
+                                .equals(deliveryId)
         );
     }
 

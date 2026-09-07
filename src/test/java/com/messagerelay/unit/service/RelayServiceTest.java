@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RelayServiceTest {
 
+    // Core requirements 2-3: a message addressed to a known recipient is accepted.
     @Test
     void given_known_recipient_when_sending_message_then_message_is_accepted() {
 
@@ -53,6 +54,7 @@ class RelayServiceTest {
         );
     }
 
+    // Duplicate-send behavior: a message ID cannot identify two pending messages.
     @Test
     void given_pending_message_when_sending_duplicate_message_id_then_duplicate_is_rejected() {
 
@@ -116,6 +118,7 @@ class RelayServiceTest {
         );
     }
 
+    // Resource bound: the 101st pending message for one recipient is rejected.
     @Test
     void given_full_recipient_mailbox_when_sending_message_then_message_is_rejected() {
 
@@ -194,6 +197,7 @@ class RelayServiceTest {
         );
     }
 
+    // ACK ownership: only the addressed recipient can remove a pending message.
     @Test
     void given_message_for_bob_when_different_recipient_acknowledges_then_message_remains_pending() {
 
@@ -235,7 +239,7 @@ class RelayServiceTest {
         boolean acknowledged =
                 relayService.acknowledge(
                         "charlie",
-                        "msg-1"
+                        message.deliveryId()
                 );
 
         assertFalse(
@@ -251,6 +255,7 @@ class RelayServiceTest {
         );
     }
 
+    // Repeated-ACK behavior: an ACK for an already removed message is ignored.
     @Test
     void given_message_already_acknowledged_when_acknowledged_again_then_second_ack_is_ignored() {
 
@@ -286,13 +291,13 @@ class RelayServiceTest {
         boolean firstAck =
                 relayService.acknowledge(
                         "bob",
-                        "msg-1"
+                        message.deliveryId()
                 );
 
         boolean secondAck =
                 relayService.acknowledge(
                         "bob",
-                        "msg-1"
+                        message.deliveryId()
                 );
 
         assertTrue(

@@ -17,8 +17,14 @@ FROM eclipse-temurin:25-jre
 
 WORKDIR /app
 
-COPY --from=build /app/target/*.jar app.jar
+COPY --from=build /app/target/message-relay-1.0.0-SNAPSHOT.jar app.jar
+
+RUN mkdir -p /data
+
+ENV RELAY_DB_PATH=/data/message-relay.db
+
+VOLUME ["/data"]
 
 EXPOSE 9000
 
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["java", "--enable-native-access=ALL-UNNAMED", "-jar", "app.jar"]

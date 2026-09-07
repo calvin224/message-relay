@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ClientSessionIntegrationTest {
 
+    // Core requirement 3: a valid send receives an explicit acceptance result.
     @Test
     @Timeout(3)
     void given_registered_client_when_sending_message_then_message_is_accepted() throws Exception {
@@ -133,6 +134,7 @@ class ClientSessionIntegrationTest {
         }
     }
 
+    // Protocol lifecycle: an unregistered connection cannot send messages.
     @Test
     @Timeout(3)
     void given_unregistered_client_when_sending_message_then_message_is_rejected() throws Exception {
@@ -215,6 +217,7 @@ class ClientSessionIntegrationTest {
         }
     }
 
+    // Core requirements 1-4: two clients register, send, receive, and ACK a message.
     @Test
     @Timeout(5)
     void given_registered_clients_when_message_is_sent_and_acknowledged_then_message_is_delivered_and_removed()
@@ -391,7 +394,7 @@ class ClientSessionIntegrationTest {
                 AckCommand ack =
                         new AckCommand(
                                 MessageType.ACK,
-                                "msg-1"
+                                delivery.deliveryId()
                         );
 
                 writeCommand(bobOutput, ack);
@@ -424,6 +427,7 @@ class ClientSessionIntegrationTest {
         }
     }
 
+    // Core requirements 5-6: an offline mailbox survives disconnect and re-registration.
     @Test
     @Timeout(7)
     void given_message_queued_for_offline_recipient_when_recipient_reconnects_then_message_is_delivered()
@@ -644,6 +648,7 @@ class ClientSessionIntegrationTest {
         }
     }
 
+    // Core requirement 7: delivery without ACK remains pending and is redelivered.
     @Test
     @Timeout(7)
     void given_unacknowledged_message_when_recipient_reconnects_then_message_is_redelivered()
@@ -822,6 +827,11 @@ class ClientSessionIntegrationTest {
             );
 
             assertEquals(
+                    firstDelivery.deliveryId(),
+                    secondDelivery.deliveryId()
+            );
+
+            assertEquals(
                     "deliver me again",
                     secondDelivery.body()
             );
@@ -854,6 +864,7 @@ class ClientSessionIntegrationTest {
         }
     }
 
+    // Failure isolation: malformed JSON returns an error without breaking the session.
     @Test
     @Timeout(5)
     void given_connected_client_when_sending_malformed_message_then_error_is_returned_and_connection_remains_usable()
@@ -947,6 +958,7 @@ class ClientSessionIntegrationTest {
         }
     }
 
+    // Invalid-input behavior: missing required fields receive a structured error.
     @Test
     @Timeout(5)
     void given_valid_json_with_missing_required_field_when_sent_then_invalid_message_error_is_returned_and_connection_remains_usable()
@@ -1056,6 +1068,7 @@ class ClientSessionIntegrationTest {
         }
     }
 
+    // Invalid-input behavior: blank and null command fields are consistently rejected.
     @Test
     @Timeout(5)
     void given_registered_client_when_commands_have_invalid_required_fields_then_each_is_rejected()

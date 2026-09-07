@@ -1,6 +1,7 @@
 package com.messagerelay.server;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.messagerelay.config.RelayLimits;
 import com.messagerelay.domain.RelayMessage;
 import com.messagerelay.domain.SendResult;
 import com.messagerelay.protocol.FrameCodec;
@@ -21,16 +22,16 @@ import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 
 public class ClientSession implements Runnable {
 
-    private static final int MAX_OUTBOUND_MESSAGES = 128;
-
     private final Socket socket;
     private final ClientRegistry clientRegistry;
     private final RelayService relayService;
+    private final int registrationTimeoutMilliseconds;
 
     private final FrameCodec frameCodec =
             new FrameCodec();
@@ -40,7 +41,7 @@ public class ClientSession implements Runnable {
 
     private final BlockingQueue<Object> outboundMessages =
             new ArrayBlockingQueue<>(
-                    MAX_OUTBOUND_MESSAGES
+                    RelayLimits.MAX_OUTBOUND_EVENTS
             );
 
     private String registeredClientId;
@@ -50,9 +51,31 @@ public class ClientSession implements Runnable {
             ClientRegistry clientRegistry,
             RelayService relayService
     ) {
+        this(
+                socket,
+                clientRegistry,
+                relayService,
+                RelayLimits.REGISTRATION_TIMEOUT_MILLISECONDS
+        );
+    }
+
+    public ClientSession(
+            Socket socket,
+            ClientRegistry clientRegistry,
+            RelayService relayService,
+            int registrationTimeoutMilliseconds
+    ) {
+        if (registrationTimeoutMilliseconds < 1) {
+            throw new IllegalArgumentException(
+                    "registrationTimeoutMilliseconds must be positive"
+            );
+        }
+
         this.socket = socket;
         this.clientRegistry = clientRegistry;
         this.relayService = relayService;
+        this.registrationTimeoutMilliseconds =
+                registrationTimeoutMilliseconds;
     }
 
     @Override
@@ -71,6 +94,9 @@ public class ClientSession implements Runnable {
                                 socket.getOutputStream()
                         )
         ) {
+            socket.setSoTimeout(
+                    registrationTimeoutMilliseconds
+            );
 
             writerThread =
                     Thread.ofVirtual().start(
@@ -90,6 +116,12 @@ public class ClientSession implements Runnable {
             System.out.println(
                     "Client disconnected: "
                             + registeredClientId
+            );
+
+        } catch (SocketTimeoutException e) {
+
+            System.out.println(
+                    "Client registration timed out"
             );
 
         } catch (IOException e) {
@@ -216,6 +248,7 @@ public class ClientSession implements Runnable {
                 new DeliveryEvent(
                         MessageType.DELIVERY,
                         message.messageId(),
+                        message.deliveryId(),
                         message.senderId(),
                         message.body()
                 );
@@ -275,13 +308,14 @@ public class ClientSession implements Runnable {
             return;
         }
 
-        boolean registered =
+        RegistrationResult registrationResult =
                 clientRegistry.register(
                         command.clientId(),
                         this
                 );
 
-        if (!registered) {
+        if (registrationResult
+                == RegistrationResult.IDENTITY_IN_USE) {
 
             sendError(
                     ErrorCode.IDENTITY_IN_USE,
@@ -291,8 +325,21 @@ public class ClientSession implements Runnable {
             return;
         }
 
+        if (registrationResult
+                == RegistrationResult.CAPACITY_REACHED) {
+
+            sendError(
+                    ErrorCode.CLIENT_LIMIT_REACHED,
+                    "Server client identity limit reached"
+            );
+
+            return;
+        }
+
         registeredClientId =
                 command.clientId();
+
+        clearRegistrationTimeout();
 
         System.out.println(
                 "Registered client: "
@@ -380,32 +427,34 @@ public class ClientSession implements Runnable {
 
         enqueueOutbound(response);
 
-        if (result.accepted()) {
-            deliverToOnlineRecipient(message);
-        }
     }
 
     private void handleAck(
             AckCommand command
     ) {
 
-        if (isBlank(command.messageId())) {
+        if (isBlank(command.deliveryId())) {
 
             sendError(
                     ErrorCode.INVALID_MESSAGE,
-                    "messageId is required"
+                    "deliveryId is required"
             );
 
             return;
         }
 
         if (registeredClientId == null) {
+            sendError(
+                    ErrorCode.INVALID_MESSAGE,
+                    "Connection must register before acknowledging"
+            );
+
             return;
         }
 
         relayService.acknowledge(
                 registeredClientId,
-                command.messageId()
+                command.deliveryId()
         );
     }
 
@@ -427,6 +476,9 @@ public class ClientSession implements Runnable {
         context.getLock().lock();
 
         try {
+            if (context.getActiveSession() != this) {
+                return;
+            }
 
             for (RelayMessage message :
                     context.getMailbox()
@@ -441,38 +493,24 @@ public class ClientSession implements Runnable {
             }
 
         } finally {
+            if (context.getActiveSession() == this) {
+                context.setReplayingPendingMessages(false);
+            }
+
             context.getLock().unlock();
         }
     }
 
-    private void deliverToOnlineRecipient(
-            RelayMessage message
-    ) {
-
-        ClientContext recipient =
-                clientRegistry.getClient(
-                        message.recipientId()
-                );
-
-        if (recipient == null) {
+    private void clearRegistrationTimeout() {
+        if (socket == null) {
             return;
         }
 
-        recipient.getLock().lock();
-
         try {
+            socket.setSoTimeout(0);
 
-            ClientSession recipientSession =
-                    recipient.getActiveSession();
-
-            if (recipientSession != null) {
-                recipientSession.deliver(
-                        message
-                );
-            }
-
-        } finally {
-            recipient.getLock().unlock();
+        } catch (IOException e) {
+            closeSocket();
         }
     }
 

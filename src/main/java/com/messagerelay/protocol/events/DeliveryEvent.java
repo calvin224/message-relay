@@ -5,6 +5,7 @@ import com.messagerelay.protocol.types.MessageType;
 public record DeliveryEvent(
         MessageType type,
         String messageId,
+        String deliveryId,
         String senderId,
         String body
 ) {

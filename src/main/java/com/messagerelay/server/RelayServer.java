@@ -1,10 +1,13 @@
 package com.messagerelay.server;
 
+import com.messagerelay.config.RelayLimits;
 import com.messagerelay.protocol.FrameCodec;
 import com.messagerelay.protocol.ProtocolCodec;
 import com.messagerelay.protocol.events.ErrorEvent;
 import com.messagerelay.protocol.types.ErrorCode;
 import com.messagerelay.protocol.types.MessageType;
+import com.messagerelay.repository.RelayMessageRepository;
+import com.messagerelay.repository.TransientRelayMessageRepository;
 import com.messagerelay.service.RelayService;
 
 import java.io.DataOutputStream;
@@ -20,26 +23,21 @@ import java.util.concurrent.TimeUnit;
 
 public class RelayServer {
 
-    private static final int MAX_ACTIVE_CONNECTIONS =
-            100;
-
-    private static final int SHUTDOWN_TIMEOUT_SECONDS =
-            2;
-
     private final int port;
+
+    private final int registrationTimeoutMilliseconds;
 
     private final ClientRegistry clientRegistry =
             new ClientRegistry();
 
-    private final RelayService relayService =
-            new RelayService(clientRegistry);
+    private final RelayService relayService;
 
     private final ExecutorService executor =
             Executors.newVirtualThreadPerTaskExecutor();
 
     private final Semaphore connectionPermits =
             new Semaphore(
-                    MAX_ACTIVE_CONNECTIONS
+                    RelayLimits.MAX_ACTIVE_CONNECTIONS
             );
 
     private final Set<Socket> activeSockets =
@@ -56,10 +54,58 @@ public class RelayServer {
     private ServerSocket serverSocket;
 
     public RelayServer(int port) {
+        this(
+                port,
+                new TransientRelayMessageRepository(),
+                RelayLimits.REGISTRATION_TIMEOUT_MILLISECONDS
+        );
+    }
+
+    public RelayServer(
+            int port,
+            int registrationTimeoutMilliseconds
+    ) {
+        this(
+                port,
+                new TransientRelayMessageRepository(),
+                registrationTimeoutMilliseconds
+        );
+    }
+
+    public RelayServer(
+            int port,
+            RelayMessageRepository messageRepository
+    ) {
+        this(
+                port,
+                messageRepository,
+                RelayLimits.REGISTRATION_TIMEOUT_MILLISECONDS
+        );
+    }
+
+    public RelayServer(
+            int port,
+            RelayMessageRepository messageRepository,
+            int registrationTimeoutMilliseconds
+    ) {
+        if (registrationTimeoutMilliseconds < 1) {
+            throw new IllegalArgumentException(
+                    "registrationTimeoutMilliseconds must be positive"
+            );
+        }
+
         this.port = port;
+        this.registrationTimeoutMilliseconds =
+                registrationTimeoutMilliseconds;
+        this.relayService = new RelayService(
+                clientRegistry,
+                messageRepository
+        );
     }
 
     public void start() throws IOException {
+
+        relayService.recoverPendingMessages();
 
         serverSocket =
                 new ServerSocket(port);
@@ -132,7 +178,8 @@ public class RelayServer {
             new ClientSession(
                     socket,
                     clientRegistry,
-                    relayService
+                    relayService,
+                    registrationTimeoutMilliseconds
             ).run();
 
         } finally {
@@ -209,7 +256,7 @@ public class RelayServer {
         try {
 
             if (!executor.awaitTermination(
-                    SHUTDOWN_TIMEOUT_SECONDS,
+                    RelayLimits.SHUTDOWN_TIMEOUT_SECONDS,
                     TimeUnit.SECONDS
             )) {
 
