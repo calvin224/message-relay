@@ -29,9 +29,36 @@ public class ProtocolCodec {
         JsonNode root =
                 objectMapper.readTree(json);
 
-        return MessageType.valueOf(
-                root.get("type").asText()
-        );
+        if (root == null || !root.isObject()) {
+            throw new IllegalArgumentException(
+                    "Message must be a JSON object"
+            );
+        }
+
+        JsonNode typeNode =
+                root.get("type");
+
+        if (typeNode == null
+                || !typeNode.isTextual()
+                || typeNode.asText().isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Message type is required"
+            );
+        }
+
+        try {
+            return MessageType.valueOf(
+                    typeNode.asText()
+            );
+
+        } catch (IllegalArgumentException e) {
+
+            throw new IllegalArgumentException(
+                    "Unknown message type: "
+                            + typeNode.asText()
+            );
+        }
     }
 
     public RegisterCommand decodeRegister(

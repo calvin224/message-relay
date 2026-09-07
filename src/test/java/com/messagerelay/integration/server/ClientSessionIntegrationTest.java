@@ -7,8 +7,10 @@ import com.messagerelay.protocol.commands.AckCommand;
 import com.messagerelay.protocol.commands.RegisterCommand;
 import com.messagerelay.protocol.commands.SendCommand;
 import com.messagerelay.protocol.events.DeliveryEvent;
+import com.messagerelay.protocol.events.ErrorEvent;
 import com.messagerelay.protocol.events.RegisteredEvent;
 import com.messagerelay.protocol.events.SendResultEvent;
+import com.messagerelay.protocol.types.ErrorCode;
 import com.messagerelay.protocol.types.MessageType;
 import com.messagerelay.server.ClientContext;
 import com.messagerelay.server.ClientRegistry;
@@ -1171,6 +1173,117 @@ class ClientSessionIntegrationTest {
                         + clientId
                         + " did not disconnect"
         );
+    }
+
+    @Test
+    @Timeout(5)
+    void malformedMessageReturnsErrorAndConnectionRemainsUsable()
+            throws Exception {
+
+        try (ServerSocket serverSocket =
+                     new ServerSocket(0);
+
+             Socket clientSocket =
+                     new Socket(
+                             "localhost",
+                             serverSocket.getLocalPort()
+                     )) {
+
+            Socket serverConnection =
+                    serverSocket.accept();
+
+            ClientRegistry clientRegistry =
+                    new ClientRegistry();
+
+            RelayService relayService =
+                    new RelayService(
+                            clientRegistry
+                    );
+
+            Thread sessionThread =
+                    Thread.ofVirtual().start(
+                            new ClientSession(
+                                    serverConnection,
+                                    clientRegistry,
+                                    relayService
+                            )
+                    );
+
+            clientSocket.setSoTimeout(2_000);
+
+            DataInputStream input =
+                    new DataInputStream(
+                            clientSocket.getInputStream()
+                    );
+
+            DataOutputStream output =
+                    new DataOutputStream(
+                            clientSocket.getOutputStream()
+                    );
+
+            /*
+             * Send syntactically invalid JSON.
+             */
+            frameCodec.writeFrame(
+                    output,
+                    "{broken-json"
+            );
+
+            ErrorEvent error =
+                    objectMapper.readValue(
+                            frameCodec.readFrame(input),
+                            ErrorEvent.class
+                    );
+
+            assertEquals(
+                    MessageType.ERROR,
+                    error.type()
+            );
+
+            assertEquals(
+                    ErrorCode.MALFORMED_MESSAGE,
+                    error.code()
+            );
+
+            /*
+             * Now send a valid REGISTER on the
+             * exact same TCP connection.
+             */
+            RegisterCommand register =
+                    new RegisterCommand(
+                            MessageType.REGISTER,
+                            "alice"
+                    );
+
+            frameCodec.writeFrame(
+                    output,
+                    protocolCodec.encode(register)
+            );
+
+            RegisteredEvent registered =
+                    objectMapper.readValue(
+                            frameCodec.readFrame(input),
+                            RegisteredEvent.class
+                    );
+
+            assertEquals(
+                    MessageType.REGISTERED,
+                    registered.type()
+            );
+
+            assertEquals(
+                    "alice",
+                    registered.clientId()
+            );
+
+            clientSocket.close();
+
+            sessionThread.join(2_000);
+
+            assertFalse(
+                    sessionThread.isAlive()
+            );
+        }
     }
 
 }

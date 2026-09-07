@@ -1,5 +1,6 @@
 package com.messagerelay.server;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.messagerelay.domain.RelayMessage;
 import com.messagerelay.domain.SendResult;
 import com.messagerelay.protocol.FrameCodec;
@@ -25,11 +26,6 @@ import java.util.concurrent.BlockingQueue;
 
 public class ClientSession implements Runnable {
 
-    /*
-     * Slightly larger than the mailbox limit so a reconnecting
-     * client can queue REGISTERED plus all pending deliveries
-     * without immediately exhausting the outbound buffer.
-     */
     private static final int MAX_OUTBOUND_MESSAGES = 128;
 
     private final Socket socket;
@@ -86,44 +82,7 @@ public class ClientSession implements Runnable {
                 String json =
                         frameCodec.readFrame(input);
 
-                MessageType type =
-                        protocolCodec.decodeType(json);
-
-                switch (type) {
-
-                    case REGISTER -> {
-                        RegisterCommand command =
-                                protocolCodec.decodeRegister(
-                                        json
-                                );
-
-                        handleRegister(command);
-                    }
-
-                    case SEND -> {
-                        SendCommand command =
-                                protocolCodec.decodeSend(
-                                        json
-                                );
-
-                        handleSend(command);
-                    }
-
-                    case ACK -> {
-                        AckCommand command =
-                                protocolCodec.decodeAck(
-                                        json
-                                );
-
-                        handleAck(command);
-                    }
-
-                    default -> sendError(
-                            ErrorCode.INVALID_MESSAGE_TYPE,
-                            "Unsupported message type: "
-                                    + type
-                    );
-                }
+                handleFrame(json);
             }
 
         } catch (EOFException e) {
@@ -152,6 +111,86 @@ public class ClientSession implements Runnable {
                         this
                 );
             }
+        }
+    }
+
+    private void handleFrame(
+            String json
+    ) {
+
+        MessageType type;
+
+        try {
+            type =
+                    protocolCodec.decodeType(
+                            json
+                    );
+
+        } catch (JsonProcessingException e) {
+
+            sendError(
+                    ErrorCode.MALFORMED_MESSAGE,
+                    "Malformed JSON message"
+            );
+
+            return;
+
+        } catch (IllegalArgumentException e) {
+
+            sendError(
+                    ErrorCode.INVALID_MESSAGE_TYPE,
+                    e.getMessage()
+            );
+
+            return;
+        }
+
+        try {
+
+            switch (type) {
+
+                case REGISTER -> {
+                    RegisterCommand command =
+                            protocolCodec.decodeRegister(
+                                    json
+                            );
+
+                    handleRegister(command);
+                }
+
+                case SEND -> {
+                    SendCommand command =
+                            protocolCodec.decodeSend(
+                                    json
+                            );
+
+                    handleSend(command);
+                }
+
+                case ACK -> {
+                    AckCommand command =
+                            protocolCodec.decodeAck(
+                                    json
+                            );
+
+                    handleAck(command);
+                }
+
+                default -> sendError(
+                        ErrorCode.INVALID_MESSAGE_TYPE,
+                        "Unsupported message type: "
+                                + type
+                );
+            }
+
+        } catch (JsonProcessingException e) {
+
+            sendError(
+                    ErrorCode.MALFORMED_MESSAGE,
+                    "Malformed "
+                            + type
+                            + " message"
+            );
         }
     }
 
@@ -258,11 +297,6 @@ public class ClientSession implements Runnable {
 
         enqueueOutbound(response);
 
-        /*
-         * If this logical client disconnected previously,
-         * its mailbox still contains any unacknowledged
-         * messages. Redeliver them on reconnect.
-         */
         deliverPendingMessages();
     }
 
