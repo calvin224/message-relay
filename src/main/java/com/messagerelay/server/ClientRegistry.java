@@ -12,10 +12,11 @@ public class ClientRegistry {
             String clientId,
             ClientSession session
     ) {
-        ClientContext context = clients.computeIfAbsent(
-                clientId,
-                ClientContext::new
-        );
+        ClientContext context =
+                clients.computeIfAbsent(
+                        clientId,
+                        ClientContext::new
+                );
 
         context.getLock().lock();
 
@@ -25,6 +26,7 @@ public class ClientRegistry {
             }
 
             context.setActiveSession(session);
+
             return true;
 
         } finally {
@@ -36,7 +38,8 @@ public class ClientRegistry {
             String clientId,
             ClientSession session
     ) {
-        ClientContext context = clients.get(clientId);
+        ClientContext context =
+                clients.get(clientId);
 
         if (context == null) {
             return;
@@ -45,11 +48,6 @@ public class ClientRegistry {
         context.getLock().lock();
 
         try {
-            /*
-             * Important:
-             * only remove the session if this is still
-             * the currently registered session.
-             */
             if (context.getActiveSession() == session) {
                 context.setActiveSession(null);
             }
@@ -57,5 +55,11 @@ public class ClientRegistry {
         } finally {
             context.getLock().unlock();
         }
+    }
+
+    public ClientContext getClient(
+            String clientId
+    ) {
+        return clients.get(clientId);
     }
 }

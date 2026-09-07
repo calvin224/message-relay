@@ -5,5 +5,7 @@ public enum MessageType {
     REGISTERED,
     SEND,
     SEND_RESULT,
+    DELIVERY,
+    ACK,
     ERROR
 }
