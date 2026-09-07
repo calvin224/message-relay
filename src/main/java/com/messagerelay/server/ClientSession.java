@@ -1,12 +1,12 @@
 package com.messagerelay.server;
 
-import com.messagerelay.protocol.types.ErrorCode;
-import com.messagerelay.protocol.events.ErrorEvent;
 import com.messagerelay.protocol.FrameCodec;
-import com.messagerelay.protocol.types.MessageType;
 import com.messagerelay.protocol.ProtocolCodec;
 import com.messagerelay.protocol.commands.RegisterCommand;
+import com.messagerelay.protocol.events.ErrorEvent;
 import com.messagerelay.protocol.events.RegisteredEvent;
+import com.messagerelay.protocol.types.ErrorCode;
+import com.messagerelay.protocol.types.MessageType;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -52,13 +52,34 @@ public class ClientSession implements Runnable {
                 String json =
                         frameCodec.readFrame(input);
 
-                RegisterCommand command =
-                        protocolCodec.decodeRegister(json);
+                MessageType type =
+                        protocolCodec.decodeType(json);
 
-                handleRegister(
-                        command,
-                        output
-                );
+                switch (type) {
+                    case REGISTER -> {
+                        RegisterCommand command =
+                                protocolCodec.decodeRegister(json);
+
+                        handleRegister(
+                                command,
+                                output
+                        );
+                    }
+
+                    case SEND -> {
+                        System.out.println(
+                                "Received SEND command"
+                        );
+                    }
+
+                    default -> {
+                        sendError(
+                                output,
+                                ErrorCode.INVALID_MESSAGE_TYPE,
+                                "Unsupported message type: " + type
+                        );
+                    }
+                }
             }
 
         } catch (EOFException e) {
