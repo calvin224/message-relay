@@ -49,4 +49,24 @@ class ProtocolCodecTest {
                 command.clientId()
         );
     }
+
+    @Test
+    void decodesMessageType() throws Exception {
+        String json = """
+            {
+              "type": "SEND",
+              "messageId": "msg-1",
+              "recipientId": "bob",
+              "body": "hello"
+            }
+            """;
+
+        MessageType type =
+                protocolCodec.decodeType(json);
+
+        assertEquals(
+                MessageType.SEND,
+                type
+        );
+    }
 }
