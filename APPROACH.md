@@ -17,12 +17,29 @@ The server implements the core registration, send, delivery, ACK, offline retent
 | Messages sent while a recipient is offline are retained | Implemented and socket-tested for an identity that registered previously, up to 100 pending messages per mailbox. Aggregate storage is not bounded. |
 | Re-registering an identity restores its mailbox | Implemented and socket-tested after disconnect cleanup. |
 | Delivered but unacknowledged messages survive disconnect | Implemented and socket-tested; pending messages are replayed on registration. |
-| Mailboxes, sizes, connections, and buffers are bounded | Partial: per-mailbox/frame/session limits exist; retained identities, total memory, and response-size admission need work. |
+| Mailboxes, sizes, connections, and buffers are bounded | Partial: per-mailbox/frame/session limits and DELIVERY-size admission exist; retained identities, total memory, and other response sizes need work. |
 | A slow/malformed client does not block unrelated work | Per-session readers/writers and bounded outbound queues provide isolation; malformed JSON recovery is tested. No deadlines or adversarial slow-client tests. |
 | Concurrent operations preserve state | Concurrent identity map/ID set and per-recipient locks protect state. No stress proof, strict FIFO guarantee, or atomic registration/replay transition. |
 | Predictable shutdown | Explicit `stop()` is integration-tested. Executable signal handling and full worker termination are incomplete. |
-| Runnable source, tests, artifact, and instructions | Build and 26 tests verified; packaged launch was blocked by occupied port 9000. See README verification record. |
+| Runnable source, tests, artifact, and instructions | Build and 29 tests verified; an earlier packaged launch was blocked by occupied port 9000. See README verification record. |
 | Optional FIFO / Docker / durable storage | FIFO not guaranteed; Dockerfile present but needs a packaging fix; no persistence implementation on `main`. |
+
+## Completed step: delivery-size validation
+
+**Purpose:** reject messages the server cannot deliver within the protocol's frame limit. This advances the core requirements for bounded message sizes, explicit send rejection, and reconnect delivery that does not repeatedly fail on an oversized pending message.
+
+Before this change, the server checked the incoming SEND frame and only checked DELIVERY when writing it to the recipient socket. These frames contain different fields: DELIVERY includes the registered sender ID. A valid-sized SEND could therefore produce a DELIVERY over 65,536 bytes. The message had already been accepted and stored by the time the writer failed, leaving it pending and liable to fail again on reconnect.
+
+The change moves that check before acceptance:
+
+1. Build and serialize the eventual DELIVERY, including the sender ID and JSON escaping.
+2. Validate its UTF-8 byte size with the same check used by the frame writer.
+3. If oversized, return a rejected `SEND_RESULT` before calling the service that reserves the ID and stores the message.
+4. Otherwise, continue through the existing recipient, duplicate-ID, mailbox, and delivery logic.
+
+The regression test first reproduced incorrect acceptance in three cases: ASCII, multibyte UTF-8, and escaped JSON. After the fix, each case verifies rejection at 65,537 bytes, an empty mailbox after rejection, successful reuse of the rejected ID with a 65,536-byte delivery, and removal after the recipient's ACK. Both connections remain usable through that exchange. The full build passes all 29 test cases and produces the executable JAR.
+
+**Next step:** bound the number of retained logical identities. The existing 100-connection limit does not prevent clients from registering new identities over time, since disconnected identities and mailboxes remain in memory. A registry cap should reject new identities when full while still allowing existing identities to reconnect without losing queued messages. This is the next part of resource bounding; aggregate byte budgets, deadlines, and the complete terminal client remain separate steps.
 
 ## Architecture and state
 
@@ -130,6 +147,7 @@ Errors have the shape:
 | Never-registered recipient | `SEND_RESULT`, `accepted:false`, reason `Unknown recipient` |
 | Globally pending message ID reused | `SEND_RESULT`, `accepted:false`, reason `Duplicate message ID` |
 | Recipient already has 100 pending messages | `SEND_RESULT`, `accepted:false`, reason `Recipient mailbox is full` |
+| Registered SEND would produce a DELIVERY over 65,536 UTF-8 bytes | `SEND_RESULT`, `accepted:false`, reason `Delivery frame exceeds maximum size`; no message or pending ID is retained |
 | Outbound queue already has 128 events | Close the affected socket; no guaranteed overflow error event |
 | Invalid framing / oversized outgoing frame / I/O failure | Close the affected socket |
 
@@ -140,6 +158,8 @@ Protocol validation errors ordinarily leave a usable connection open. Error deli
 ### Acceptance and acknowledgement
 
 Acceptance means the message is stored in the recipient's in-memory mailbox. It does not mean the recipient received or processed it. A sender can lose its connection after the server stores the message but before it receives `SEND_RESULT`, leaving an ambiguous result.
+
+Before mailbox admission, `ClientSession` serializes the eventual `DeliveryEvent` and uses `FrameCodec.validateFrame()` to check its UTF-8 payload size. Validation and frame writing share the same encoding/limit check. This prevents an accepted SEND from becoming an undeliverable oversized DELIVERY when the sender ID is added. The check runs before reserving the message ID, for both online and offline recipients. Oversized delivery rejection takes precedence over recipient, duplicate-ID, and mailbox checks. The event is serialized again when written; this small extra encoding cost keeps the change local to the protocol boundary.
 
 Online delivery enqueues an event without deleting the mailbox entry. Offline messages wait for registration. The registered recipient's ACK removes the matching mailbox entry and then releases its pending ID. ACKs from other recipients cannot remove it. Valid ACKs before registration, unknown IDs, and repeated ACKs after deletion are silently ignored on the wire. The server does not prove that a recipient has actually received a message before accepting its ACK.
 
@@ -161,14 +181,14 @@ Different recipients have separate locks, and message delivery normally queues w
 
 - **In-memory retention:** keeps the core understandable and is allowed by the brief. Restart loses all data and identities; delivery guarantees do not cross a restart.
 - **Per-client limits:** 100 pending messages and 128 outbound events bound individual collections. The retained identity map has no cap/expiry, so repeated registration of new identities can grow total memory indefinitely. There is no global queued-byte budget.
-- **Size checks:** inbound frames are capped before payload allocation, but SEND admission does not validate the eventual DELIVERY encoding. A large sender ID can make a previously accepted message exceed the outbound limit and prevent delivery on every reconnect.
+- **Size checks:** inbound frames are capped before payload allocation, and registered SENDs are rejected before storage if their encoded DELIVERY exceeds the frame limit. The exact boundary, multibyte UTF-8, and JSON escaping are socket-tested. Independent identity/message-ID limits and boundary validation for other server response shapes remain future work.
 - **Timeouts:** production sockets have no registration, partial-frame, idle, write, or ACK deadline. Virtual threads reduce the cost of blocked threads, but 100 admitted idle clients can exhaust connection capacity.
 - **Shutdown:** `stop()` closes listener and active sockets; `start()` cleanup waits up to two seconds for its executor, then interrupts outstanding tasks. Writer threads are interrupted without joining. `Main` does not install a shutdown hook, so Ctrl+C does not exercise this controlled path. Concurrent start/stop and accept/stop races are not exhaustively tested.
 - **Protocol simplicity:** JSON is readable and binary framing handles TCP splitting/coalescing. There is no protocol version, delivery receipt back to the sender, ACK receipt, or completed-ID history.
 
 ## Testing and verification
 
-The suite currently has 26 tests: 16 unit tests and 10 integration tests. `test` runs both groups; `clean verify` also packages the JAR and emits JaCoCo coverage.
+The suite currently has 29 test cases: 16 unit tests and 13 integration cases, including three parameterized delivery-size cases. `test` runs both groups; `clean verify` also packages the JAR and emits JaCoCo coverage.
 
 | Boundary | Existing coverage |
 | --- | --- |
@@ -176,11 +196,12 @@ The suite currently has 26 tests: 16 unit tests and 10 integration tests. `test`
 | Protocol codec | Registration round trip and fixture-based command/type decoding |
 | Service/domain | Acceptance, duplicate pending IDs, full mailbox, wrong-recipient ACK, repeated ACK, rejection result |
 | Session sockets | Registered/unregistered SEND, delivery plus ACK, offline reconnect, unacknowledged replay, malformed JSON recovery, required-field validation |
+| Delivery-size sockets | Reject a DELIVERY one byte over the limit without retaining its message/ID, then retry the same ID at the exact limit and receive/ACK it; ASCII, UTF-8, and escaped JSON variants |
 | Server sockets | Explicit shutdown with an active client; rejection at the active-connection cap |
 
 Session integration tests create real loopback sockets around shared registry/service instances. Server tests exercise the actual listener and shutdown path. Tests use socket read timeouts (typically two seconds), bounded polling/joins, and JUnit integration-test timeouts of 3–10 seconds. They avoid an external server dependency. The server-test free-port helper releases a temporary port before binding the relay, so there is still a port-allocation race.
 
-Missing coverage includes concurrent duplicate reservations and send/ACK/reconnect interleavings, strict ordering, slow-reader saturation, partial-frame deadlines, retained-identity exhaustion, oversized derived deliveries, process signal shutdown, and container execution. Several implemented rejection paths also lack dedicated tests. Passing the suite is evidence for the covered scenarios, not proof of these behaviours. Further tests would focus on these invariants and failure cases.
+Missing coverage includes concurrent duplicate reservations and send/ACK/reconnect interleavings, strict ordering, slow-reader saturation, partial-frame deadlines, retained-identity exhaustion, other response-size boundaries, process signal shutdown, and container execution. Several implemented rejection paths also lack dedicated tests. Passing the suite is evidence for the covered scenarios, not proof of these behaviours. Further tests would focus on these invariants and failure cases.
 
 Local validation used JDK 25 and Maven 3.9.16. `clean verify` passed and produced the shaded JAR; the Windows wrapper test command also passed. The packaged process was launched but port 9000 was already occupied, so a successful artifact/client run remains unverified. Docker and Linux/macOS execution have not been verified. See README for exact commands and outputs.
 
@@ -192,7 +213,7 @@ Verify the documented commands from a clean checkout, complete the packaged serv
 
 ### 2. Close the core correctness gaps
 
-1. Add a cap on retained identities and a global pending-byte budget. Reject new state when capacity is exhausted; do not silently evict accepted messages. Validate ID/body byte lengths and encoded DELIVERY size before accepting a SEND. Test boundary rejection and resource release on ACK.
+1. Add a cap on retained identities and a global pending-byte budget. Reject new state when capacity is exhausted; do not silently evict accepted messages. Add independent field limits and validate other response sizes. DELIVERY-size admission is implemented and regression-tested. Test remaining boundary rejections and resource release on ACK.
 2. Add bounded registration/frame deadlines and slow-writer handling, ensuring rejection cannot stall the accept loop. Test one stalled client alongside a healthy exchange. Expose a small set of port/timeout/limit settings without introducing a configuration framework.
 3. Install a shutdown hook that calls `stop()`, coordinate admission with shutdown, and await both readers and writers within a defined deadline. Add a process-level shutdown test and a start/stop race test.
 4. Make registration response/replay and online mailbox delivery a coordinated transition under the recipient lock. Test concurrent sends and reconnects with barriers/latches. If claiming optional FIFO, drain deliveries from one per-recipient ordered path instead of separately enqueueing each sender's message.
