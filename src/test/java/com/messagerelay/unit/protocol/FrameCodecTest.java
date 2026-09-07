@@ -1,5 +1,6 @@
-package com.messagerelay.protocol;
+package com.messagerelay.unit.protocol;
 
+import com.messagerelay.protocol.FrameCodec;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
