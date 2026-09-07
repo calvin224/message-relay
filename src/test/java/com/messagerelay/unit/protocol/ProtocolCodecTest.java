@@ -6,6 +6,7 @@ import com.messagerelay.protocol.commands.SendCommand;
 import com.messagerelay.protocol.types.MessageType;
 import org.junit.jupiter.api.Test;
 
+import static com.messagerelay.support.TestUtils.readResource;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class ProtocolCodecTest {
@@ -14,7 +15,7 @@ class ProtocolCodecTest {
             new ProtocolCodec();
 
     @Test
-    void encodesRegisterCommand() throws Exception {
+    void given_register_command_when_encoding_and_decoding_then_original_command_is_returned() throws Exception {
         RegisterCommand command =
                 new RegisterCommand(
                         MessageType.REGISTER,
@@ -30,13 +31,8 @@ class ProtocolCodecTest {
     }
 
     @Test
-    void decodesRegisterCommand() throws Exception {
-        String json = """
-                {
-                  "type": "REGISTER",
-                  "clientId": "alice"
-                }
-                """;
+    void given_register_json_when_decoding_register_command_then_command_fields_match() throws Exception {
+        String json = readResource("protocol/register.json");
 
         RegisterCommand command =
                 protocolCodec.decodeRegister(json);
@@ -53,15 +49,8 @@ class ProtocolCodecTest {
     }
 
     @Test
-    void decodesMessageType() throws Exception {
-        String json = """
-            {
-              "type": "SEND",
-              "messageId": "msg-1",
-              "recipientId": "bob",
-              "body": "hello"
-            }
-            """;
+    void given_send_json_when_decoding_message_type_then_send_type_is_returned() throws Exception {
+        String json = readResource("protocol/send.json");
 
         MessageType type =
                 protocolCodec.decodeType(json);
@@ -73,15 +62,8 @@ class ProtocolCodecTest {
     }
 
     @Test
-    void decodesSendCommand() throws Exception {
-        String json = """
-            {
-              "type": "SEND",
-              "messageId": "msg-1",
-              "recipientId": "bob",
-              "body": "hello"
-            }
-            """;
+    void given_send_json_when_decoding_send_command_then_command_fields_match() throws Exception {
+        String json = readResource("protocol/send.json");
 
         SendCommand command =
                 protocolCodec.decodeSend(json);

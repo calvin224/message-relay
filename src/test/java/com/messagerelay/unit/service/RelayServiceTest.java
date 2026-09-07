@@ -3,10 +3,11 @@ package com.messagerelay.unit.service;
 import com.messagerelay.domain.RelayMessage;
 import com.messagerelay.domain.SendResult;
 import com.messagerelay.server.ClientRegistry;
-import com.messagerelay.server.ClientSession;
 import com.messagerelay.service.RelayService;
 import org.junit.jupiter.api.Test;
 
+import static com.messagerelay.support.TestUtils.getMailboxSize;
+import static com.messagerelay.support.TestUtils.registerRecipient;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -15,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RelayServiceTest {
 
     @Test
-    void acceptsMessageForKnownRecipient() {
+    void given_known_recipient_when_sending_message_then_message_is_accepted() {
 
         ClientRegistry clientRegistry =
                 new ClientRegistry();
@@ -25,17 +26,7 @@ class RelayServiceTest {
                         clientRegistry
                 );
 
-        ClientSession bobSession =
-                new ClientSession(
-                        null,
-                        clientRegistry,
-                        relayService
-                );
-
-        clientRegistry.register(
-                "bob",
-                bobSession
-        );
+        registerRecipient(clientRegistry, relayService, "bob");
 
         RelayMessage message =
                 new RelayMessage(
@@ -63,7 +54,7 @@ class RelayServiceTest {
     }
 
     @Test
-    void rejectsDuplicatePendingMessageId() {
+    void given_pending_message_when_sending_duplicate_message_id_then_duplicate_is_rejected() {
 
         ClientRegistry clientRegistry =
                 new ClientRegistry();
@@ -73,17 +64,7 @@ class RelayServiceTest {
                         clientRegistry
                 );
 
-        ClientSession bobSession =
-                new ClientSession(
-                        null,
-                        clientRegistry,
-                        relayService
-                );
-
-        clientRegistry.register(
-                "bob",
-                bobSession
-        );
+        registerRecipient(clientRegistry, relayService, "bob");
 
         RelayMessage firstMessage =
                 new RelayMessage(
@@ -131,15 +112,12 @@ class RelayServiceTest {
 
         assertEquals(
                 1,
-                clientRegistry
-                        .getClient("bob")
-                        .getMailbox()
-                        .size()
+                getMailboxSize(clientRegistry, "bob")
         );
     }
 
     @Test
-    void rejectsMessageWhenRecipientMailboxIsFull() {
+    void given_full_recipient_mailbox_when_sending_message_then_message_is_rejected() {
 
         ClientRegistry clientRegistry =
                 new ClientRegistry();
@@ -149,17 +127,7 @@ class RelayServiceTest {
                         clientRegistry
                 );
 
-        ClientSession bobSession =
-                new ClientSession(
-                        null,
-                        clientRegistry,
-                        relayService
-                );
-
-        clientRegistry.register(
-                "bob",
-                bobSession
-        );
+        registerRecipient(clientRegistry, relayService, "bob");
 
         /*
          * Fill Bob's bounded mailbox.
@@ -184,10 +152,7 @@ class RelayServiceTest {
 
         assertEquals(
                 100,
-                clientRegistry
-                        .getClient("bob")
-                        .getMailbox()
-                        .size()
+                getMailboxSize(clientRegistry, "bob")
         );
 
         /*
@@ -225,10 +190,7 @@ class RelayServiceTest {
          */
         assertEquals(
                 100,
-                clientRegistry
-                        .getClient("bob")
-                        .getMailbox()
-                        .size()
+                getMailboxSize(clientRegistry, "bob")
         );
     }
 }

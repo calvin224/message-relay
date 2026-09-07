@@ -1,8 +1,5 @@
 package com.messagerelay.integration.server;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.messagerelay.protocol.FrameCodec;
-import com.messagerelay.protocol.ProtocolCodec;
 import com.messagerelay.protocol.commands.AckCommand;
 import com.messagerelay.protocol.commands.RegisterCommand;
 import com.messagerelay.protocol.commands.SendCommand;
@@ -12,9 +9,7 @@ import com.messagerelay.protocol.events.RegisteredEvent;
 import com.messagerelay.protocol.events.SendResultEvent;
 import com.messagerelay.protocol.types.ErrorCode;
 import com.messagerelay.protocol.types.MessageType;
-import com.messagerelay.server.ClientContext;
 import com.messagerelay.server.ClientRegistry;
-import com.messagerelay.server.ClientSession;
 import com.messagerelay.service.RelayService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -24,24 +19,23 @@ import java.io.DataOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 
+import static com.messagerelay.support.TestUtils.getMailboxSize;
+import static com.messagerelay.support.TestUtils.readEvent;
+import static com.messagerelay.support.TestUtils.registerRecipient;
+import static com.messagerelay.support.TestUtils.startSession;
+import static com.messagerelay.support.TestUtils.waitForClientDisconnected;
+import static com.messagerelay.support.TestUtils.waitForMailboxSize;
+import static com.messagerelay.support.TestUtils.writeCommand;
+import static com.messagerelay.support.TestUtils.writeJson;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ClientSessionIntegrationTest {
 
-    private final FrameCodec frameCodec =
-            new FrameCodec();
-
-    private final ProtocolCodec protocolCodec =
-            new ProtocolCodec();
-
-    private final ObjectMapper objectMapper =
-            new ObjectMapper();
-
     @Test
     @Timeout(3)
-    void registeredClientCanSendMessage() throws Exception {
+    void given_registered_client_when_sending_message_then_message_is_accepted() throws Exception {
 
         try (ServerSocket serverSocket =
                      new ServerSocket(0)) {
@@ -63,33 +57,10 @@ class ClientSessionIntegrationTest {
                                 clientRegistry
                         );
 
-                /*
-                 * Bob only needs to exist as a registered
-                 * logical recipient for this test.
-                 *
-                 * The session is never run, so the null socket
-                 * is not accessed.
-                 */
-                ClientSession bobSession =
-                        new ClientSession(
-                                null,
-                                clientRegistry,
-                                relayService
-                        );
-
-                clientRegistry.register(
-                        "bob",
-                        bobSession
-                );
+                registerRecipient(clientRegistry, relayService, "bob");
 
                 Thread sessionThread =
-                        Thread.ofVirtual().start(
-                                new ClientSession(
-                                        serverSocketConnection,
-                                        clientRegistry,
-                                        relayService
-                                )
-                        );
+                        startSession(serverSocketConnection, clientRegistry, relayService);
 
                 clientSocket.setSoTimeout(2_000);
 
@@ -109,19 +80,10 @@ class ClientSessionIntegrationTest {
                                 "alice"
                         );
 
-                frameCodec.writeFrame(
-                        output,
-                        protocolCodec.encode(register)
-                );
-
-                String registerResponseJson =
-                        frameCodec.readFrame(input);
+                writeCommand(output, register);
 
                 RegisteredEvent registered =
-                        objectMapper.readValue(
-                                registerResponseJson,
-                                RegisteredEvent.class
-                        );
+                        readEvent(input, RegisteredEvent.class);
 
                 assertEquals(
                         MessageType.REGISTERED,
@@ -141,19 +103,10 @@ class ClientSessionIntegrationTest {
                                 "hello"
                         );
 
-                frameCodec.writeFrame(
-                        output,
-                        protocolCodec.encode(send)
-                );
-
-                String sendResponseJson =
-                        frameCodec.readFrame(input);
+                writeCommand(output, send);
 
                 SendResultEvent result =
-                        objectMapper.readValue(
-                                sendResponseJson,
-                                SendResultEvent.class
-                        );
+                        readEvent(input, SendResultEvent.class);
 
                 assertEquals(
                         MessageType.SEND_RESULT,
@@ -182,7 +135,7 @@ class ClientSessionIntegrationTest {
 
     @Test
     @Timeout(3)
-    void unregisteredClientCannotSendMessage() throws Exception {
+    void given_unregistered_client_when_sending_message_then_message_is_rejected() throws Exception {
 
         try (ServerSocket serverSocket =
                      new ServerSocket(0)) {
@@ -205,13 +158,7 @@ class ClientSessionIntegrationTest {
                         );
 
                 Thread sessionThread =
-                        Thread.ofVirtual().start(
-                                new ClientSession(
-                                        serverSocketConnection,
-                                        clientRegistry,
-                                        relayService
-                                )
-                        );
+                        startSession(serverSocketConnection, clientRegistry, relayService);
 
                 clientSocket.setSoTimeout(2_000);
 
@@ -233,19 +180,10 @@ class ClientSessionIntegrationTest {
                                 "hello"
                         );
 
-                frameCodec.writeFrame(
-                        output,
-                        protocolCodec.encode(send)
-                );
-
-                String responseJson =
-                        frameCodec.readFrame(input);
+                writeCommand(output, send);
 
                 SendResultEvent result =
-                        objectMapper.readValue(
-                                responseJson,
-                                SendResultEvent.class
-                        );
+                        readEvent(input, SendResultEvent.class);
 
                 assertEquals(
                         MessageType.SEND_RESULT,
@@ -279,7 +217,7 @@ class ClientSessionIntegrationTest {
 
     @Test
     @Timeout(5)
-    void messageIsDeliveredAndRemovedAfterAcknowledgement()
+    void given_registered_clients_when_message_is_sent_and_acknowledged_then_message_is_delivered_and_removed()
             throws Exception {
 
         try (ServerSocket serverSocket =
@@ -318,22 +256,10 @@ class ClientSessionIntegrationTest {
                         );
 
                 Thread aliceSessionThread =
-                        Thread.ofVirtual().start(
-                                new ClientSession(
-                                        aliceServerSocket,
-                                        clientRegistry,
-                                        relayService
-                                )
-                        );
+                        startSession(aliceServerSocket, clientRegistry, relayService);
 
                 Thread bobSessionThread =
-                        Thread.ofVirtual().start(
-                                new ClientSession(
-                                        bobServerSocket,
-                                        clientRegistry,
-                                        relayService
-                                )
-                        );
+                        startSession(bobServerSocket, clientRegistry, relayService);
 
                 aliceSocket.setSoTimeout(2_000);
                 bobSocket.setSoTimeout(2_000);
@@ -364,20 +290,10 @@ class ClientSessionIntegrationTest {
                                 "alice"
                         );
 
-                frameCodec.writeFrame(
-                        aliceOutput,
-                        protocolCodec.encode(
-                                aliceRegister
-                        )
-                );
+                writeCommand(aliceOutput, aliceRegister);
 
                 RegisteredEvent aliceRegistered =
-                        objectMapper.readValue(
-                                frameCodec.readFrame(
-                                        aliceInput
-                                ),
-                                RegisteredEvent.class
-                        );
+                        readEvent(aliceInput, RegisteredEvent.class);
 
                 assertEquals(
                         MessageType.REGISTERED,
@@ -395,20 +311,10 @@ class ClientSessionIntegrationTest {
                                 "bob"
                         );
 
-                frameCodec.writeFrame(
-                        bobOutput,
-                        protocolCodec.encode(
-                                bobRegister
-                        )
-                );
+                writeCommand(bobOutput, bobRegister);
 
                 RegisteredEvent bobRegistered =
-                        objectMapper.readValue(
-                                frameCodec.readFrame(
-                                        bobInput
-                                ),
-                                RegisteredEvent.class
-                        );
+                        readEvent(bobInput, RegisteredEvent.class);
 
                 assertEquals(
                         MessageType.REGISTERED,
@@ -428,18 +334,10 @@ class ClientSessionIntegrationTest {
                                 "hello bob"
                         );
 
-                frameCodec.writeFrame(
-                        aliceOutput,
-                        protocolCodec.encode(send)
-                );
+                writeCommand(aliceOutput, send);
 
                 SendResultEvent sendResult =
-                        objectMapper.readValue(
-                                frameCodec.readFrame(
-                                        aliceInput
-                                ),
-                                SendResultEvent.class
-                        );
+                        readEvent(aliceInput, SendResultEvent.class);
 
                 assertEquals(
                         MessageType.SEND_RESULT,
@@ -456,12 +354,7 @@ class ClientSessionIntegrationTest {
                 );
 
                 DeliveryEvent delivery =
-                        objectMapper.readValue(
-                                frameCodec.readFrame(
-                                        bobInput
-                                ),
-                                DeliveryEvent.class
-                        );
+                        readEvent(bobInput, DeliveryEvent.class);
 
                 assertEquals(
                         MessageType.DELIVERY,
@@ -501,10 +394,7 @@ class ClientSessionIntegrationTest {
                                 "msg-1"
                         );
 
-                frameCodec.writeFrame(
-                        bobOutput,
-                        protocolCodec.encode(ack)
-                );
+                writeCommand(bobOutput, ack);
 
                 /*
                  * ACK processing happens on Bob's
@@ -534,61 +424,9 @@ class ClientSessionIntegrationTest {
         }
     }
 
-    private int getMailboxSize(
-            ClientRegistry clientRegistry,
-            String clientId
-    ) {
-
-        ClientContext context =
-                clientRegistry.getClient(clientId);
-
-        context.getLock().lock();
-
-        try {
-            return context
-                    .getMailbox()
-                    .size();
-
-        } finally {
-            context.getLock().unlock();
-        }
-    }
-
-    private void waitForMailboxSize(
-            ClientRegistry clientRegistry,
-            String clientId,
-            int expectedSize
-    ) throws Exception {
-
-        long deadline =
-                System.currentTimeMillis()
-                        + 2_000;
-
-        while (System.currentTimeMillis()
-                < deadline) {
-
-            if (getMailboxSize(
-                    clientRegistry,
-                    clientId
-            ) == expectedSize) {
-
-                return;
-            }
-
-            Thread.sleep(10);
-        }
-
-        throw new AssertionError(
-                "Mailbox for client "
-                        + clientId
-                        + " did not reach size "
-                        + expectedSize
-        );
-    }
-
     @Test
     @Timeout(7)
-    void offlineMessageIsDeliveredWhenRecipientReconnects()
+    void given_message_queued_for_offline_recipient_when_recipient_reconnects_then_message_is_delivered()
             throws Exception {
 
         try (ServerSocket serverSocket =
@@ -616,13 +454,7 @@ class ClientSessionIntegrationTest {
                     serverSocket.accept();
 
             Thread firstBobSession =
-                    Thread.ofVirtual().start(
-                            new ClientSession(
-                                    bobServerSocket,
-                                    clientRegistry,
-                                    relayService
-                            )
-                    );
+                    startSession(bobServerSocket, clientRegistry, relayService);
 
             bobSocket.setSoTimeout(2_000);
 
@@ -636,23 +468,13 @@ class ClientSessionIntegrationTest {
                             bobSocket.getOutputStream()
                     );
 
-            frameCodec.writeFrame(
+            writeCommand(
                     bobOutput,
-                    protocolCodec.encode(
-                            new RegisterCommand(
-                                    MessageType.REGISTER,
-                                    "bob"
-                            )
-                    )
+                    new RegisterCommand(MessageType.REGISTER, "bob")
             );
 
             RegisteredEvent bobRegistered =
-                    objectMapper.readValue(
-                            frameCodec.readFrame(
-                                    bobInput
-                            ),
-                            RegisteredEvent.class
-                    );
+                    readEvent(bobInput, RegisteredEvent.class);
 
             assertEquals(
                     "bob",
@@ -688,13 +510,7 @@ class ClientSessionIntegrationTest {
                     serverSocket.accept();
 
             Thread aliceSession =
-                    Thread.ofVirtual().start(
-                            new ClientSession(
-                                    aliceServerSocket,
-                                    clientRegistry,
-                                    relayService
-                            )
-                    );
+                    startSession(aliceServerSocket, clientRegistry, relayService);
 
             aliceSocket.setSoTimeout(2_000);
 
@@ -708,42 +524,23 @@ class ClientSessionIntegrationTest {
                             aliceSocket.getOutputStream()
                     );
 
-            frameCodec.writeFrame(
+            writeCommand(
                     aliceOutput,
-                    protocolCodec.encode(
-                            new RegisterCommand(
-                                    MessageType.REGISTER,
-                                    "alice"
-                            )
-                    )
+                    new RegisterCommand(MessageType.REGISTER, "alice")
             );
 
-            frameCodec.readFrame(
-                    aliceInput
-            );
+            readEvent(aliceInput, RegisteredEvent.class);
 
             /*
              * Send while Bob has no active TCP session.
              */
-            frameCodec.writeFrame(
+            writeCommand(
                     aliceOutput,
-                    protocolCodec.encode(
-                            new SendCommand(
-                                    MessageType.SEND,
-                                    "msg-offline-1",
-                                    "bob",
-                                    "message while offline"
-                            )
-                    )
+                    new SendCommand(MessageType.SEND, "msg-offline-1", "bob", "message while offline")
             );
 
             SendResultEvent sendResult =
-                    objectMapper.readValue(
-                            frameCodec.readFrame(
-                                    aliceInput
-                            ),
-                            SendResultEvent.class
-                    );
+                    readEvent(aliceInput, SendResultEvent.class);
 
             assertTrue(
                     sendResult.accepted()
@@ -770,13 +567,7 @@ class ClientSessionIntegrationTest {
                     serverSocket.accept();
 
             Thread secondBobSession =
-                    Thread.ofVirtual().start(
-                            new ClientSession(
-                                    reconnectedBobServerSocket,
-                                    clientRegistry,
-                                    relayService
-                            )
-                    );
+                    startSession(reconnectedBobServerSocket, clientRegistry, relayService);
 
             reconnectedBobSocket.setSoTimeout(
                     2_000
@@ -794,23 +585,13 @@ class ClientSessionIntegrationTest {
                                     .getOutputStream()
                     );
 
-            frameCodec.writeFrame(
+            writeCommand(
                     reconnectedBobOutput,
-                    protocolCodec.encode(
-                            new RegisterCommand(
-                                    MessageType.REGISTER,
-                                    "bob"
-                            )
-                    )
+                    new RegisterCommand(MessageType.REGISTER, "bob")
             );
 
             RegisteredEvent reconnected =
-                    objectMapper.readValue(
-                            frameCodec.readFrame(
-                                    reconnectedBobInput
-                            ),
-                            RegisteredEvent.class
-                    );
+                    readEvent(reconnectedBobInput, RegisteredEvent.class);
 
             assertEquals(
                     "bob",
@@ -818,12 +599,7 @@ class ClientSessionIntegrationTest {
             );
 
             DeliveryEvent delivery =
-                    objectMapper.readValue(
-                            frameCodec.readFrame(
-                                    reconnectedBobInput
-                            ),
-                            DeliveryEvent.class
-                    );
+                    readEvent(reconnectedBobInput, DeliveryEvent.class);
 
             assertEquals(
                     "msg-offline-1",
@@ -870,7 +646,7 @@ class ClientSessionIntegrationTest {
 
     @Test
     @Timeout(7)
-    void unacknowledgedMessageIsRedeliveredAfterReconnect()
+    void given_unacknowledged_message_when_recipient_reconnects_then_message_is_redelivered()
             throws Exception {
 
         try (ServerSocket serverSocket =
@@ -897,13 +673,7 @@ class ClientSessionIntegrationTest {
                     serverSocket.accept();
 
             Thread aliceSession =
-                    Thread.ofVirtual().start(
-                            new ClientSession(
-                                    aliceServerSocket,
-                                    clientRegistry,
-                                    relayService
-                            )
-                    );
+                    startSession(aliceServerSocket, clientRegistry, relayService);
 
             aliceSocket.setSoTimeout(2_000);
 
@@ -917,17 +687,12 @@ class ClientSessionIntegrationTest {
                             aliceSocket.getOutputStream()
                     );
 
-            frameCodec.writeFrame(
+            writeCommand(
                     aliceOutput,
-                    protocolCodec.encode(
-                            new RegisterCommand(
-                                    MessageType.REGISTER,
-                                    "alice"
-                            )
-                    )
+                    new RegisterCommand(MessageType.REGISTER, "alice")
             );
 
-            frameCodec.readFrame(aliceInput);
+            readEvent(aliceInput, RegisteredEvent.class);
 
             /*
              * Connect Bob.
@@ -942,13 +707,7 @@ class ClientSessionIntegrationTest {
                     serverSocket.accept();
 
             Thread firstBobSession =
-                    Thread.ofVirtual().start(
-                            new ClientSession(
-                                    bobServerSocket,
-                                    clientRegistry,
-                                    relayService
-                            )
-                    );
+                    startSession(bobServerSocket, clientRegistry, relayService);
 
             bobSocket.setSoTimeout(2_000);
 
@@ -962,52 +721,30 @@ class ClientSessionIntegrationTest {
                             bobSocket.getOutputStream()
                     );
 
-            frameCodec.writeFrame(
+            writeCommand(
                     bobOutput,
-                    protocolCodec.encode(
-                            new RegisterCommand(
-                                    MessageType.REGISTER,
-                                    "bob"
-                            )
-                    )
+                    new RegisterCommand(MessageType.REGISTER, "bob")
             );
 
-            frameCodec.readFrame(bobInput);
+            readEvent(bobInput, RegisteredEvent.class);
 
             /*
              * Alice sends while Bob is online.
              */
-            frameCodec.writeFrame(
+            writeCommand(
                     aliceOutput,
-                    protocolCodec.encode(
-                            new SendCommand(
-                                    MessageType.SEND,
-                                    "msg-redelivery-1",
-                                    "bob",
-                                    "deliver me again"
-                            )
-                    )
+                    new SendCommand(MessageType.SEND, "msg-redelivery-1", "bob", "deliver me again")
             );
 
             SendResultEvent sendResult =
-                    objectMapper.readValue(
-                            frameCodec.readFrame(
-                                    aliceInput
-                            ),
-                            SendResultEvent.class
-                    );
+                    readEvent(aliceInput, SendResultEvent.class);
 
             assertTrue(
                     sendResult.accepted()
             );
 
             DeliveryEvent firstDelivery =
-                    objectMapper.readValue(
-                            frameCodec.readFrame(
-                                    bobInput
-                            ),
-                            DeliveryEvent.class
-                    );
+                    readEvent(bobInput, DeliveryEvent.class);
 
             assertEquals(
                     "msg-redelivery-1",
@@ -1051,13 +788,7 @@ class ClientSessionIntegrationTest {
                     serverSocket.accept();
 
             Thread secondBobSession =
-                    Thread.ofVirtual().start(
-                            new ClientSession(
-                                    reconnectedBobServerSocket,
-                                    clientRegistry,
-                                    relayService
-                            )
-                    );
+                    startSession(reconnectedBobServerSocket, clientRegistry, relayService);
 
             reconnectedBobSocket.setSoTimeout(
                     2_000
@@ -1075,27 +806,15 @@ class ClientSessionIntegrationTest {
                                     .getOutputStream()
                     );
 
-            frameCodec.writeFrame(
+            writeCommand(
                     reconnectedBobOutput,
-                    protocolCodec.encode(
-                            new RegisterCommand(
-                                    MessageType.REGISTER,
-                                    "bob"
-                            )
-                    )
+                    new RegisterCommand(MessageType.REGISTER, "bob")
             );
 
-            frameCodec.readFrame(
-                    reconnectedBobInput
-            );
+            readEvent(reconnectedBobInput, RegisteredEvent.class);
 
             DeliveryEvent secondDelivery =
-                    objectMapper.readValue(
-                            frameCodec.readFrame(
-                                    reconnectedBobInput
-                            ),
-                            DeliveryEvent.class
-                    );
+                    readEvent(reconnectedBobInput, DeliveryEvent.class);
 
             assertEquals(
                     firstDelivery.messageId(),
@@ -1135,49 +854,9 @@ class ClientSessionIntegrationTest {
         }
     }
 
-    private void waitForClientDisconnected(
-            ClientRegistry clientRegistry,
-            String clientId
-    ) throws Exception {
-
-        long deadline =
-                System.currentTimeMillis()
-                        + 2_000;
-
-        while (System.currentTimeMillis()
-                < deadline) {
-
-            ClientContext context =
-                    clientRegistry.getClient(
-                            clientId
-                    );
-
-            context.getLock().lock();
-
-            try {
-                if (context.getActiveSession()
-                        == null) {
-
-                    return;
-                }
-
-            } finally {
-                context.getLock().unlock();
-            }
-
-            Thread.sleep(10);
-        }
-
-        throw new AssertionError(
-                "Client "
-                        + clientId
-                        + " did not disconnect"
-        );
-    }
-
     @Test
     @Timeout(5)
-    void malformedMessageReturnsErrorAndConnectionRemainsUsable()
+    void given_connected_client_when_sending_malformed_message_then_error_is_returned_and_connection_remains_usable()
             throws Exception {
 
         try (ServerSocket serverSocket =
@@ -1201,13 +880,7 @@ class ClientSessionIntegrationTest {
                     );
 
             Thread sessionThread =
-                    Thread.ofVirtual().start(
-                            new ClientSession(
-                                    serverConnection,
-                                    clientRegistry,
-                                    relayService
-                            )
-                    );
+                    startSession(serverConnection, clientRegistry, relayService);
 
             clientSocket.setSoTimeout(2_000);
 
@@ -1224,16 +897,10 @@ class ClientSessionIntegrationTest {
             /*
              * Send syntactically invalid JSON.
              */
-            frameCodec.writeFrame(
-                    output,
-                    "{broken-json"
-            );
+            writeJson(output, "{broken-json");
 
             ErrorEvent error =
-                    objectMapper.readValue(
-                            frameCodec.readFrame(input),
-                            ErrorEvent.class
-                    );
+                    readEvent(input, ErrorEvent.class);
 
             assertEquals(
                     MessageType.ERROR,
@@ -1255,16 +922,10 @@ class ClientSessionIntegrationTest {
                             "alice"
                     );
 
-            frameCodec.writeFrame(
-                    output,
-                    protocolCodec.encode(register)
-            );
+            writeCommand(output, register);
 
             RegisteredEvent registered =
-                    objectMapper.readValue(
-                            frameCodec.readFrame(input),
-                            RegisteredEvent.class
-                    );
+                    readEvent(input, RegisteredEvent.class);
 
             assertEquals(
                     MessageType.REGISTERED,

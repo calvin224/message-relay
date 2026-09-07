@@ -1,0 +1,6 @@
+{
+  "type": "SEND",
+  "messageId": "msg-1",
+  "recipientId": "bob",
+  "body": "hello"
+}

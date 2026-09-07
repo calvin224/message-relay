@@ -18,7 +18,7 @@ class FrameCodecTest {
     private final FrameCodec frameCodec = new FrameCodec();
 
     @Test
-    void writesAndReadsFrame() throws Exception {
+    void given_message_when_writing_and_reading_frame_then_original_message_is_returned() throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         DataOutputStream output = new DataOutputStream(bytes);
 
@@ -34,7 +34,7 @@ class FrameCodecTest {
     }
 
     @Test
-    void writesAndReadsUtf8Frame() throws Exception {
+    void given_utf8_message_when_writing_and_reading_frame_then_original_message_is_returned() throws Exception {
         String message = "Hello 👋 café";
 
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
@@ -50,7 +50,7 @@ class FrameCodecTest {
     }
 
     @Test
-    void rejectsZeroLengthFrame() {
+    void given_zero_length_frame_when_reading_frame_then_io_exception_is_thrown() {
         byte[] invalidFrame = {
                 0, 0, 0, 0
         };
@@ -66,7 +66,7 @@ class FrameCodecTest {
     }
 
     @Test
-    void rejectsNegativeFrameLength() {
+    void given_negative_frame_length_when_reading_frame_then_io_exception_is_thrown() {
         byte[] invalidFrame = {
                 -1, -1, -1, -1
         };
@@ -82,7 +82,7 @@ class FrameCodecTest {
     }
 
     @Test
-    void rejectsIncompleteFrame() throws Exception {
+    void given_incomplete_frame_when_reading_frame_then_io_exception_is_thrown() throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         DataOutputStream output = new DataOutputStream(bytes);
 
@@ -102,7 +102,7 @@ class FrameCodecTest {
     }
 
     @Test
-    void rejectsFrameLargerThanMaximum() {
+    void given_message_larger_than_maximum_when_writing_frame_then_io_exception_is_thrown() {
         String message = "a".repeat(
                 (64 * 1024) + 1
         );

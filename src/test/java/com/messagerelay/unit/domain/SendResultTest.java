@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 class SendResultTest {
 
     @Test
-    void createsRejectedResult() {
+    void given_message_id_and_reason_when_creating_rejected_result_then_result_contains_rejection_details() {
         SendResult result =
                 SendResult.rejected(
                         "msg-1",
