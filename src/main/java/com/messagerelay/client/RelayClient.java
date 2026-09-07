@@ -22,7 +22,7 @@ public class RelayClient {
     private static final int PORT =
             9000;
 
-    public static void main(String[] args)
+    static void main(String[] args)
             throws Exception {
 
         if (args.length == 0) {
