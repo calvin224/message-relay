@@ -947,4 +947,113 @@ class ClientSessionIntegrationTest {
         }
     }
 
+    @Test
+    @Timeout(5)
+    void given_valid_json_with_missing_required_field_when_sent_then_invalid_message_error_is_returned_and_connection_remains_usable()
+            throws Exception {
+
+        try (ServerSocket serverSocket =
+                     new ServerSocket(0);
+
+             Socket clientSocket =
+                     new Socket(
+                             "localhost",
+                             serverSocket.getLocalPort()
+                     )) {
+
+            Socket serverConnection =
+                    serverSocket.accept();
+
+            ClientRegistry clientRegistry =
+                    new ClientRegistry();
+
+            RelayService relayService =
+                    new RelayService(
+                            clientRegistry
+                    );
+
+            Thread sessionThread =
+                    startSession(
+                            serverConnection,
+                            clientRegistry,
+                            relayService
+                    );
+
+            clientSocket.setSoTimeout(2_000);
+
+            DataInputStream input =
+                    new DataInputStream(
+                            clientSocket.getInputStream()
+                    );
+
+            DataOutputStream output =
+                    new DataOutputStream(
+                            clientSocket.getOutputStream()
+                    );
+
+            /*
+             * Valid JSON, but clientId is missing.
+             */
+            writeJson(
+                    output,
+                    """
+                    {
+                      "type": "REGISTER"
+                    }
+                    """
+            );
+
+            ErrorEvent error =
+                    readEvent(
+                            input,
+                            ErrorEvent.class
+                    );
+
+            assertEquals(
+                    MessageType.ERROR,
+                    error.type()
+            );
+
+            assertEquals(
+                    ErrorCode.INVALID_MESSAGE,
+                    error.code()
+            );
+
+            /*
+             * Same TCP connection should still work.
+             */
+            writeCommand(
+                    output,
+                    new RegisterCommand(
+                            MessageType.REGISTER,
+                            "alice"
+                    )
+            );
+
+            RegisteredEvent registered =
+                    readEvent(
+                            input,
+                            RegisteredEvent.class
+                    );
+
+            assertEquals(
+                    MessageType.REGISTERED,
+                    registered.type()
+            );
+
+            assertEquals(
+                    "alice",
+                    registered.clientId()
+            );
+
+            clientSocket.close();
+
+            sessionThread.join(2_000);
+
+            assertFalse(
+                    sessionThread.isAlive()
+            );
+        }
+    }
+
 }
