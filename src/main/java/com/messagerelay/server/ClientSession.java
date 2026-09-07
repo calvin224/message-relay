@@ -86,13 +86,11 @@ public class ClientSession implements Runnable {
                         );
                     }
 
-                    default -> {
-                        sendError(
-                                output,
-                                ErrorCode.INVALID_MESSAGE_TYPE,
-                                "Unsupported message type: " + type
-                        );
-                    }
+                    default -> sendError(
+                            output,
+                            ErrorCode.INVALID_MESSAGE_TYPE,
+                            "Unsupported message type: " + type
+                    );
                 }
             }
 

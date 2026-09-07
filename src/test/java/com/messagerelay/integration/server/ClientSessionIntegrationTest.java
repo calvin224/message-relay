@@ -153,4 +153,99 @@ class ClientSessionIntegrationTest {
             }
         }
     }
+
+    @Test
+    @Timeout(3)
+    void unregisteredClientCannotSendMessage() throws Exception {
+
+        try (ServerSocket serverSocket =
+                     new ServerSocket(0)) {
+
+            try (Socket clientSocket =
+                         new Socket(
+                                 "localhost",
+                                 serverSocket.getLocalPort()
+                         )) {
+
+                Socket serverSocketConnection =
+                        serverSocket.accept();
+
+                ClientRegistry clientRegistry =
+                        new ClientRegistry();
+
+                RelayService relayService =
+                        new RelayService();
+
+                Thread sessionThread =
+                        Thread.ofVirtual().start(
+                                new ClientSession(
+                                        serverSocketConnection,
+                                        clientRegistry,
+                                        relayService
+                                )
+                        );
+
+                clientSocket.setSoTimeout(2_000);
+
+                DataInputStream input =
+                        new DataInputStream(
+                                clientSocket.getInputStream()
+                        );
+
+                DataOutputStream output =
+                        new DataOutputStream(
+                                clientSocket.getOutputStream()
+                        );
+
+                SendCommand send =
+                        new SendCommand(
+                                MessageType.SEND,
+                                "msg-1",
+                                "bob",
+                                "hello"
+                        );
+
+                frameCodec.writeFrame(
+                        output,
+                        protocolCodec.encode(send)
+                );
+
+                String responseJson =
+                        frameCodec.readFrame(input);
+
+                SendResultEvent result =
+                        objectMapper.readValue(
+                                responseJson,
+                                SendResultEvent.class
+                        );
+
+                assertEquals(
+                        MessageType.SEND_RESULT,
+                        result.type()
+                );
+
+                assertEquals(
+                        "msg-1",
+                        result.messageId()
+                );
+
+                assertFalse(
+                        result.accepted()
+                );
+
+                assertEquals(
+                        "Connection must register before sending",
+                        result.reason()
+                );
+
+                clientSocket.close();
+
+                sessionThread.join(2_000);
+
+                assertFalse(
+                        sessionThread.isAlive()
+                );
+            }
+        }
+    }
 }
