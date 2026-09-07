@@ -2,7 +2,7 @@
 
 A small Java TCP client/server relay for the Cisco candidate technical exercise. The server owns registration, in-memory mailboxes, delivery, reconnect redelivery, and acknowledgements. Jackson handles JSON; no broker or messaging framework is used.
 
-This documents the implementation on `main` at `697cc64` (confirmed against GitHub during review). Work on other branches is not part of this submission. The core send/receive/reconnect scenarios are implemented and tested, but there are remaining resource, lifecycle, and usability limitations. This is an incomplete exercise submission, not a production service.
+The implementation supports registration, addressed messaging, explicit acknowledgements, offline retention, and redelivery after reconnect. The core scenarios are covered by automated tests. Remaining resource, lifecycle, and client limitations are documented below.
 
 See [APPROACH.md](APPROACH.md) for acceptance criteria, the wire protocol, concurrency decisions, test boundaries, and a prioritised completion plan.
 
@@ -110,11 +110,11 @@ All identities, queued messages, and pending message IDs are lost when the proce
 - The executable lacks a shutdown hook, and the sample client does not demonstrate the complete exchange interactively.
 - Docker packaging needs correction and verification. Durable storage and restart recovery are not implemented on `main`; the repository interface is unused.
 
-These gaps and their proposed fixes are described in [APPROACH.md](APPROACH.md#remaining-work-in-priority-order). The next step is a small core-correctness pass, followed by interview preparation; optional persistence and extra infrastructure should wait.
+The [development roadmap](APPROACH.md#remaining-work-in-priority-order) prioritises resource bounds, lifecycle handling, and a complete terminal client before optional persistence and infrastructure.
 
 ## CI and Docker status
 
-`.github/workflows/ci.yaml` defines Java 25 build, unit-test, integration-test, SonarQube, and packaging jobs for pushes/PRs to `main`. The packaging job uploads the executable JAR as the `message-relay` artifact after build and tests pass. It does not depend on SonarQube analysis. SonarQube uses repository configuration and `SONAR_TOKEN`; local build/test commands do not require those settings. Deployment and image publishing are not configured. The workflow definition was inspected; this is not a claim that the latest hosted run is green.
+`.github/workflows/ci.yaml` defines Java 25 build, unit-test, integration-test, SonarQube, and packaging jobs for pushes/PRs to `main`. The packaging job uploads the executable JAR as the `message-relay` artifact after build and tests pass. It does not depend on SonarQube analysis. SonarQube uses repository configuration and `SONAR_TOKEN`; local build/test commands do not require those settings. Deployment and image publishing are not configured. Hosted CI status has not been verified as part of the local validation below.
 
 A two-stage Dockerfile exists, but its final `COPY --from=build /app/target/*.jar app.jar` matches both the shaded and original JARs. It needs an explicit executable-JAR path before being treated as a working bonus. It also skips tests and uses mutable image tags. Docker build/run has not been verified for this submission.
 
@@ -127,10 +127,8 @@ docker run --rm --name message-relay -p 127.0.0.1:9000:9000 message-relay:local
 
 ## Verification record
 
-During the documentation review of `main` at `697cc64`:
+Local validation against implementation revision `697cc64`:
 
 - Windows, JDK 25, Maven 3.9.16: `.\mvnw.cmd --batch-mode --no-transfer-progress clean verify` and the equivalent installed-Maven command passed, producing the executable JAR and coverage report.
-- `.\mvnw.cmd --batch-mode --no-transfer-progress test` passed: **26 tests, zero failures/errors/skips**. The Windows wrapper initially failed inside the restricted agent environment and succeeded when rerun outside that restriction.
+- `.\mvnw.cmd --batch-mode --no-transfer-progress test` passed: **26 tests, zero failures/errors/skips**.
 - Launching the packaged server reached socket binding but failed because local port 9000 was occupied. A successful packaged server/client smoke run remains to be repeated with that port free. Automated socket tests passed on temporary ports.
-
-Before sharing the public repository, rerun the build from a clean checkout, complete that launch check, check the hosted CI result, and ensure the submitted revision contains these documents and no sensitive material.

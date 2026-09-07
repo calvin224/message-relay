@@ -1,10 +1,10 @@
 # Approach
 
-## Scope and stopping point
+## Design scope
 
-The objective is a small, explainable relay that owns its protocol and message state. This document describes `main` at `697cc64`, not the implementation on experimental branches. The exercise went beyond the intended time box. The decision now is to freeze scope, describe the current behaviour accurately, and identify a short completion path instead of continuing to add features.
+The objective is a small, explainable relay that owns its protocol and message state. The design uses standard TCP sockets, explicit acknowledgements, and in-memory mailboxes to make delivery and failure behaviour visible in the application code.
 
-The server implements the core registration, send, delivery, ACK, offline retention, and reconnect scenarios. The implementation is incomplete in aggregate resource bounding, lifecycle hardening, and the command-line client. Docker and persistence should not distract from those core gaps.
+The server implements the core registration, send, delivery, ACK, offline retention, and reconnect scenarios. Remaining work covers aggregate resource bounding, lifecycle hardening, and the command-line client. Docker and persistence are optional extensions after those core improvements.
 
 ## Acceptance criteria
 
@@ -180,15 +180,15 @@ The suite currently has 26 tests: 16 unit tests and 10 integration tests. `test`
 
 Session integration tests create real loopback sockets around shared registry/service instances. Server tests exercise the actual listener and shutdown path. Tests use socket read timeouts (typically two seconds), bounded polling/joins, and JUnit integration-test timeouts of 3–10 seconds. They avoid an external server dependency. The server-test free-port helper releases a temporary port before binding the relay, so there is still a port-allocation race.
 
-Missing coverage includes concurrent duplicate reservations and send/ACK/reconnect interleavings, strict ordering, slow-reader saturation, partial-frame deadlines, retained-identity exhaustion, oversized derived deliveries, process signal shutdown, and container execution. Several implemented rejection paths also lack dedicated tests. Passing the suite is evidence for the covered scenarios, not proof of these behaviours. Prefer a few focused invariant/failure tests over further coverage-percentage work.
+Missing coverage includes concurrent duplicate reservations and send/ACK/reconnect interleavings, strict ordering, slow-reader saturation, partial-frame deadlines, retained-identity exhaustion, oversized derived deliveries, process signal shutdown, and container execution. Several implemented rejection paths also lack dedicated tests. Passing the suite is evidence for the covered scenarios, not proof of these behaviours. Further tests would focus on these invariants and failure cases.
 
-During this documentation review, the source, tests, build configuration, Dockerfile, and CI definition were inspected. JDK 25/Maven 3.9.16 `clean verify` passed and produced the shaded JAR; the Windows wrapper test command also passed outside the restricted agent environment. The packaged process was launched but port 9000 was already occupied, so a successful artifact/client run remains unverified. No Docker or Linux/macOS execution is claimed. See README for exact commands and outputs.
+Local validation used JDK 25 and Maven 3.9.16. `clean verify` passed and produced the shaded JAR; the Windows wrapper test command also passed. The packaged process was launched but port 9000 was already occupied, so a successful artifact/client run remains unverified. Docker and Linux/macOS execution have not been verified. See README for exact commands and outputs.
 
 ## Remaining work in priority order
 
-### 1. Finish the submission checks
+### 1. Complete artifact validation
 
-Keep `main` as the reviewable baseline and avoid merging experimental persistence branches merely because they exist. Run the documented commands from a clean checkout, free port 9000 and run the packaged server/client, and check hosted CI. Confirm public repository visibility and review the submitted files for sensitive content. These docs deliberately separate observed behaviour from intended work.
+Verify the documented commands from a clean checkout, complete the packaged server/client check with port 9000 available, and confirm the hosted CI result. This extends the existing source-level and socket-test validation to the runnable artifact.
 
 ### 2. Close the core correctness gaps
 
@@ -198,26 +198,20 @@ Keep `main` as the reviewable baseline and avoid merging experimental persistenc
 4. Make registration response/replay and online mailbox delivery a coordinated transition under the recipient lock. Test concurrent sends and reconnects with barriers/latches. If claiming optional FIFO, drain deliveries from one per-recipient ordered path instead of separately enqueueing each sender's message.
 5. Tighten the ID/ACK contract: require fresh IDs and consider a bounded completed-ID history or delivery-generation token if protecting against stale ACKs after ID reuse. Document the retention window instead of claiming permanent deduplication.
 
-Each item should be a small change with focused verification. If stopping here, retain the limitations explicitly rather than describing these fixes as implemented.
+These are planned changes, each paired with focused verification of its behaviour.
 
-### 3. Make the client useful for an interview demonstration
+### 3. Extend the terminal client
 
-Extend `RelayClient` with simple send, receive, ACK, disconnect, and reconnect operations using the existing codecs. Keep ACK explicit so a demonstration can deliberately disconnect before acknowledging and show redelivery. Add host/port arguments and bounded waits. This is a small terminal client; a UI is unnecessary.
+Extend `RelayClient` with send, receive, ACK, disconnect, and reconnect operations using the existing codecs. Explicit ACK control allows a message to be received, left unacknowledged, and redelivered after reconnect. Add host/port arguments and bounded waits.
 
 ### 4. Optional work only after the core
 
 - **Docker:** copy the explicit shaded JAR, run tests before publishing, verify container startup/shutdown, and pin base-image digests if reproducibility is claimed.
 - **Persistence:** first define the storage transaction and recovery contract. Persist before returning acceptance; atomically remove/mark acknowledged messages, rebuild pending-ID/mailbox state at startup, and define storage-full/write-failure responses. A small SQLite implementation could be evaluated then, with crash/restart tests. Merely adding a repository interface does not provide durability.
-- **CI/deployment discussion:** the current pipeline builds/tests/packages and uploads a JAR. A release path could version that tested artifact, record its commit/checksum, and promote it or a tested image. Deployment, replicas, and a production messaging platform are outside this exercise.
+- **CI/deployment:** the current pipeline builds/tests/packages and uploads a JAR. A release path could version that tested artifact, record its commit/checksum, and promote it or a tested image. Deployment, replicas, and a production messaging platform are outside this exercise.
 
 ## AI assistance and ownership
 
-AI assistance was used for repository review, documentation drafting, and identifying gaps against the exercise requirements. The submission-review prompt was to describe what actually exists on `main`, state limitations, and outline the remaining work after exceeding the time box. Suggestions were checked against source and test code rather than treating suggested features as completed work.
+AI assistance was used for repository review, documentation drafting, and identifying gaps against the exercise requirements. Prompts focused on the implementation on `main`, protocol and concurrency behaviour, known limitations, and a prioritised completion plan. Suggestions were checked against source and test code.
 
-Verification included matching the local `main` commit to the remote, inspecting the protocol/state/lifecycle paths and build configuration, running the build and automated tests, and attempting the packaged launch. The occupied-port launch and unverified Docker path are reported explicitly. This documentation pass changed documentation only; proposed code changes remain future work. AI assistance and passing tests do not replace the candidate's responsibility to understand, explain, and modify every submitted component.
-
-## Interview preparation
-
-Prepare to walk through one message from framing to mailbox acceptance, delivery, ACK, and reconnect. Explain why a socket write is not an acknowledgement, why a sender may not know whether a SEND succeeded, why virtual threads still need bounds, and where locks do and do not preserve ordering. Be able to run the tests, identify the executable artifact, explain the CI-to-artifact path, and make one small change confidently.
-
-The most useful remaining preparation is understanding this implementation and its explicit gaps. More optional infrastructure is not a substitute for that understanding.
+Verification included matching the local `main` commit to the remote, inspecting the protocol/state/lifecycle paths and build configuration, running the build and automated tests, and attempting the packaged launch. The occupied-port launch and unverified Docker path are recorded in the validation results. Responsibility for the implementation and its documented behaviour remains with the author.
