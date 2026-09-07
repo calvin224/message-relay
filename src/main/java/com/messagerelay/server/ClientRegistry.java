@@ -58,4 +58,10 @@ public class ClientRegistry {
             context.getLock().unlock();
         }
     }
+
+    public ClientContext getClient(
+            String clientId
+    ) {
+        return clients.get(clientId);
+    }
 }

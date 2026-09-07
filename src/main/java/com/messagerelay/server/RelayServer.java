@@ -16,7 +16,7 @@ public class RelayServer {
             new ClientRegistry();
 
     private final RelayService relayService =
-            new RelayService();
+            new RelayService(clientRegistry);
 
     private final ExecutorService executor =
             Executors.newVirtualThreadPerTaskExecutor();

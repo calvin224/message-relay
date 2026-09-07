@@ -54,7 +54,28 @@ class ClientSessionIntegrationTest {
                         new ClientRegistry();
 
                 RelayService relayService =
-                        new RelayService();
+                        new RelayService(
+                                clientRegistry
+                        );
+
+                /*
+                 * Bob only needs to exist as a registered
+                 * logical recipient for this test.
+                 *
+                 * The session is never run, so the null socket
+                 * is not accessed.
+                 */
+                ClientSession bobSession =
+                        new ClientSession(
+                                null,
+                                clientRegistry,
+                                relayService
+                        );
+
+                clientRegistry.register(
+                        "bob",
+                        bobSession
+                );
 
                 Thread sessionThread =
                         Thread.ofVirtual().start(
@@ -174,7 +195,9 @@ class ClientSessionIntegrationTest {
                         new ClientRegistry();
 
                 RelayService relayService =
-                        new RelayService();
+                        new RelayService(
+                                clientRegistry
+                        );
 
                 Thread sessionThread =
                         Thread.ofVirtual().start(
