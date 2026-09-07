@@ -1,5 +1,7 @@
 package com.messagerelay.server;
 
+import com.messagerelay.service.RelayService;
+
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -12,6 +14,9 @@ public class RelayServer {
 
     private final ClientRegistry clientRegistry =
             new ClientRegistry();
+
+    private final RelayService relayService =
+            new RelayService();
 
     private final ExecutorService executor =
             Executors.newVirtualThreadPerTaskExecutor();
@@ -41,7 +46,8 @@ public class RelayServer {
                 executor.submit(
                         new ClientSession(
                                 socket,
-                                clientRegistry
+                                clientRegistry,
+                                relayService
                         )
                 );
             }

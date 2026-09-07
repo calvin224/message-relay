@@ -1,5 +1,6 @@
-package com.messagerelay.protocol;
+package com.messagerelay.unit.protocol;
 
+import com.messagerelay.protocol.ProtocolCodec;
 import com.messagerelay.protocol.commands.RegisterCommand;
 import com.messagerelay.protocol.commands.SendCommand;
 import com.messagerelay.protocol.types.MessageType;
