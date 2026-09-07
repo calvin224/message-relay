@@ -1,6 +1,6 @@
 # Message Relay
 
-A small Java TCP client/server relay for the Cisco candidate technical exercise. The server owns registration, in-memory mailboxes, delivery, reconnect redelivery, and acknowledgements. Jackson handles JSON; no broker or messaging framework is used.
+A small Java TCP client/server relay for the technical exercise. The server owns registration, in-memory mailboxes, delivery, reconnect redelivery, and acknowledgements. Jackson handles JSON; no broker or messaging framework is used.
 
 This documents the implementation on `main` at `697cc64` (confirmed against GitHub during review). Work on other branches is not part of this submission. The core send/receive/reconnect scenarios are implemented and tested, but there are remaining resource, lifecycle, and usability limitations. This is an incomplete exercise submission, not a production service.
 
