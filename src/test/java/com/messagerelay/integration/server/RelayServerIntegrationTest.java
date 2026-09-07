@@ -11,25 +11,30 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.IOException;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.messagerelay.support.TestUtils.findFreePort;
 import static com.messagerelay.support.TestUtils.readEvent;
 import static com.messagerelay.support.TestUtils.startServer;
-import static com.messagerelay.support.TestUtils.waitUntilListening;
 import static com.messagerelay.support.TestUtils.writeCommand;
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 class RelayServerIntegrationTest {
 
     @Test
     @Timeout(5)
-    void given_running_server_when_stopped_then_server_shuts_down_cleanly() throws Exception {
+    void given_running_server_when_stopped_then_server_shuts_down_cleanly()
+            throws Exception {
 
-        int port = findFreePort();
+        int port =
+                findFreePort();
 
         RelayServer relayServer =
                 new RelayServer(port);
@@ -38,9 +43,20 @@ class RelayServerIntegrationTest {
                 new AtomicReference<>();
 
         Thread serverThread =
-                startServer(relayServer, serverFailure);
+                startServer(
+                        relayServer,
+                        serverFailure
+                );
 
-        waitUntilListening(port);
+        /*
+         * Establishing a real TCP connection proves
+         * that the server has bound the port and is
+         * accepting clients.
+         */
+        try (Socket ignored =
+                     connectWhenAvailable(port)) {
+            // Connection is only used as a readiness check.
+        }
 
         relayServer.stop();
 
@@ -60,7 +76,8 @@ class RelayServerIntegrationTest {
     void given_active_connection_limit_reached_when_client_connects_then_connection_is_rejected()
             throws Exception {
 
-        int port = findFreePort();
+        int port =
+                findFreePort();
 
         RelayServer relayServer =
                 new RelayServer(port);
@@ -69,9 +86,10 @@ class RelayServerIntegrationTest {
                 new AtomicReference<>();
 
         Thread serverThread =
-                startServer(relayServer, serverFailure);
-
-        waitUntilListening(port);
+                startServer(
+                        relayServer,
+                        serverFailure
+                );
 
         List<Socket> clients =
                 new ArrayList<>();
@@ -79,13 +97,28 @@ class RelayServerIntegrationTest {
         try {
 
             /*
-             * Fill all 100 active connection slots.
+             * Rather than opening and closing a separate
+             * readiness-probe connection, the first
+             * successful connection becomes client 0.
              *
-             * Register each client and wait for REGISTERED
-             * so we know the server has actually accepted
-             * and started every session.
+             * This avoids racing with the semaphore
+             * permit being released by a probe session.
              */
-            for (int i = 0; i < 100; i++) {
+            Socket firstClient =
+                    connectWhenAvailable(port);
+
+            clients.add(firstClient);
+
+            registerClient(
+                    firstClient,
+                    "client-0"
+            );
+
+            /*
+             * Client 0 already occupies one of the
+             * 100 active connection slots.
+             */
+            for (int i = 1; i < 100; i++) {
 
                 Socket socket =
                         new Socket(
@@ -93,39 +126,22 @@ class RelayServerIntegrationTest {
                                 port
                         );
 
-                socket.setSoTimeout(2_000);
+                socket.setSoTimeout(
+                        2_000
+                );
 
                 clients.add(socket);
 
-                DataInputStream input =
-                        new DataInputStream(
-                                socket.getInputStream()
-                        );
-
-                DataOutputStream output =
-                        new DataOutputStream(
-                                socket.getOutputStream()
-                        );
-
-                RegisterCommand register =
-                        new RegisterCommand(
-                                MessageType.REGISTER,
-                                "client-" + i
-                        );
-
-                writeCommand(output, register);
-
-                /*
-                 * Wait for REGISTERED before creating
-                 * the next connection.
-                 */
-                readEvent(input, RegisteredEvent.class);
+                registerClient(
+                        socket,
+                        "client-" + i
+                );
             }
 
             /*
-             * Connection 101 should be accepted at TCP
-             * level only long enough for the server to
-             * send a clear rejection.
+             * All 100 permits are now occupied.
+             * Connection 101 should receive a clear
+             * protocol error and then be closed.
              */
             try (Socket overflowClient =
                          new Socket(
@@ -137,14 +153,17 @@ class RelayServerIntegrationTest {
                         2_000
                 );
 
-                DataInputStream overflowInput =
+                DataInputStream input =
                         new DataInputStream(
                                 overflowClient
                                         .getInputStream()
                         );
 
                 ErrorEvent error =
-                        readEvent(overflowInput, ErrorEvent.class);
+                        readEvent(
+                                input,
+                                ErrorEvent.class
+                        );
 
                 assertEquals(
                         MessageType.ERROR,
@@ -160,7 +179,13 @@ class RelayServerIntegrationTest {
         } finally {
 
             for (Socket client : clients) {
-                client.close();
+
+                try {
+                    client.close();
+
+                } catch (IOException ignored) {
+                    // Best-effort test cleanup.
+                }
             }
 
             relayServer.stop();
@@ -174,6 +199,97 @@ class RelayServerIntegrationTest {
 
         assertNull(
                 serverFailure.get()
+        );
+    }
+
+    private void registerClient(
+            Socket socket,
+            String clientId
+    ) throws Exception {
+
+        socket.setSoTimeout(
+                2_000
+        );
+
+        DataInputStream input =
+                new DataInputStream(
+                        socket.getInputStream()
+                );
+
+        DataOutputStream output =
+                new DataOutputStream(
+                        socket.getOutputStream()
+                );
+
+        RegisterCommand register =
+                new RegisterCommand(
+                        MessageType.REGISTER,
+                        clientId
+                );
+
+        writeCommand(
+                output,
+                register
+        );
+
+        RegisteredEvent registered =
+                readEvent(
+                        input,
+                        RegisteredEvent.class
+                );
+
+        assertEquals(
+                MessageType.REGISTERED,
+                registered.type()
+        );
+
+        assertEquals(
+                clientId,
+                registered.clientId()
+        );
+    }
+
+    private Socket connectWhenAvailable(
+            int port
+    ) throws Exception {
+
+        long deadline =
+                System.nanoTime()
+                        + TimeUnit.SECONDS
+                        .toNanos(2);
+
+        IOException lastFailure =
+                null;
+
+        while (System.nanoTime()
+                < deadline) {
+
+            try {
+
+                Socket socket =
+                        new Socket(
+                                "localhost",
+                                port
+                        );
+
+                socket.setSoTimeout(
+                        2_000
+                );
+
+                return socket;
+
+            } catch (IOException exception) {
+
+                lastFailure =
+                        exception;
+
+                Thread.sleep(20);
+            }
+        }
+
+        throw new IllegalStateException(
+                "Relay server did not start in time",
+                lastFailure
         );
     }
 }
