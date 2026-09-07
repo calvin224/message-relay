@@ -1,6 +1,7 @@
 package com.messagerelay.protocol;
 
 import com.messagerelay.protocol.commands.RegisterCommand;
+import com.messagerelay.protocol.commands.SendCommand;
 import com.messagerelay.protocol.types.MessageType;
 import org.junit.jupiter.api.Test;
 
@@ -67,6 +68,41 @@ class ProtocolCodecTest {
         assertEquals(
                 MessageType.SEND,
                 type
+        );
+    }
+
+    @Test
+    void decodesSendCommand() throws Exception {
+        String json = """
+            {
+              "type": "SEND",
+              "messageId": "msg-1",
+              "recipientId": "bob",
+              "body": "hello"
+            }
+            """;
+
+        SendCommand command =
+                protocolCodec.decodeSend(json);
+
+        assertEquals(
+                MessageType.SEND,
+                command.type()
+        );
+
+        assertEquals(
+                "msg-1",
+                command.messageId()
+        );
+
+        assertEquals(
+                "bob",
+                command.recipientId()
+        );
+
+        assertEquals(
+                "hello",
+                command.body()
         );
     }
 }
