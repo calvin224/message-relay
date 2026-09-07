@@ -115,6 +115,21 @@ Expected output:
 Message relay listening on port 9000
 ```
 
+The server accepts an optional port argument. The client accepts optional host and port arguments after the identity:
+
+```sh
+java -jar target/message-relay-1.0.0-SNAPSHOT.jar 9100
+java -cp target/message-relay-1.0.0-SNAPSHOT.jar com.messagerelay.client.RelayClient bob localhost 9100
+```
+
+The defaults remain server port `9000` and client destination `localhost:9000`. Server port `0` requests an available port from the operating system; the startup message prints the actual bound port.
+
+## Entry-point test coverage
+
+Automated tests now launch the actual command-line client and server entry point in separate JVMs. They verify registration, SEND frames and results, displayed deliveries, explicit ACKs, help and invalid commands, console EOF/quit, server EOF/malformed frames, and the JVM shutdown hook with an active client.
+
+These tests use temporary ports and bounded waits. Child JVMs inherit the JaCoCo agent when Maven enables it, so their execution contributes to `target/site/jacoco/index.html` and the XML report consumed by SonarQube. No coverage exclusions are added. The tests run as part of the existing `clean verify` command.
+
 ---
 
 # Interactive CLI Demo

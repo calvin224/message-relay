@@ -701,6 +701,8 @@ An idle client can therefore occupy one of the bounded connection slots indefini
 
 `Main` installs a JVM shutdown hook.
 
+The server also accepts an optional port argument, defaulting to `9000`. Tests use port `0` and read the actual bound port from startup output. The client accepts `<clientId> [host] [port]`, retaining `localhost:9000` as its default destination. This allows isolated entry-point tests without depending on a free fixed port.
+
 Therefore both:
 
 ```text
@@ -781,6 +783,16 @@ Covers server-level behaviour including:
 - controlled shutdown.
 
 Tests use bounded test-side timeouts so failures terminate deterministically.
+
+### `RelayClientIntegrationTest`
+
+Launches the real `RelayClient.main` in a child JVM against a local socket peer. Tests cover usage without an identity, help and invalid commands, registration, SEND serialization and result display, DELIVERY display, explicit rather than automatic ACK, quit, console EOF, server EOF, and malformed server frames. Bare `send` and `ack` commands now display their specific usage instructions.
+
+### `MainIntegrationTest`
+
+Launches `Main.main` in a child JVM, registers a real socket client, then requests normal JVM exit through a test-only stdin control thread. The test verifies the shutdown-hook output, active-client disconnection, and successful process exit. This exercises JVM shutdown portably without terminating Maven or relying on platform-specific signals. It does not replace Docker/SIGTERM testing or exercise the rare `IOException` logging path in `Main.shutdown`.
+
+The test process helper forwards the active JaCoCo agent to child JVMs and waits for them to exit, allowing coverage to be collected in the existing report. These tests have 15-second JUnit limits, five-second socket/output/exit waits, and bounded cleanup for failed processes. Coverage measures actual entry-point execution; no production classes are excluded to improve the percentage.
 
 ---
 

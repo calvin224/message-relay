@@ -11,7 +11,11 @@ public class Main {
     public static void main(String[] args) throws Exception {
 
         RelayServer server =
-                new RelayServer(PORT);
+                new RelayServer(
+                        args.length > 0
+                                ? Integer.parseInt(args[0])
+                                : PORT
+                );
 
         Runtime.getRuntime().addShutdownHook(
                 Thread.ofPlatform()

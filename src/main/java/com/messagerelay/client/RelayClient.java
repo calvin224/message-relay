@@ -28,7 +28,7 @@ public class RelayClient {
         if (args.length == 0) {
 
             System.out.println(
-                    "Usage: RelayClient <clientId>"
+                    "Usage: RelayClient <clientId> [host] [port]"
             );
 
             return;
@@ -46,8 +46,8 @@ public class RelayClient {
         try (
                 Socket socket =
                         new Socket(
-                                HOST,
-                                PORT
+                                args.length > 1 ? args[1] : HOST,
+                                args.length > 2 ? Integer.parseInt(args[2]) : PORT
                         );
 
                 DataInputStream input =
@@ -118,7 +118,7 @@ public class RelayClient {
                     continue;
                 }
 
-                if (line.startsWith(
+                if (line.equals("send") || line.startsWith(
                         "send "
                 )) {
 
@@ -132,7 +132,7 @@ public class RelayClient {
                     continue;
                 }
 
-                if (line.startsWith(
+                if (line.equals("ack") || line.startsWith(
                         "ack "
                 )) {
 
@@ -243,8 +243,7 @@ public class RelayClient {
                         2
                 );
 
-        if (parts.length < 2
-                || parts[1].isBlank()) {
+        if (parts.length < 2) {
 
             System.out.println(
                     "Usage: ack <messageId>"
