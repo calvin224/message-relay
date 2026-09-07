@@ -25,7 +25,12 @@ import java.util.concurrent.BlockingQueue;
 
 public class ClientSession implements Runnable {
 
-    private static final int MAX_OUTBOUND_MESSAGES = 100;
+    /*
+     * Slightly larger than the mailbox limit so a reconnecting
+     * client can queue REGISTERED plus all pending deliveries
+     * without immediately exhausting the outbound buffer.
+     */
+    private static final int MAX_OUTBOUND_MESSAGES = 128;
 
     private final Socket socket;
     private final ClientRegistry clientRegistry;
@@ -164,7 +169,7 @@ public class ClientSession implements Runnable {
         return queued;
     }
 
-    public void deliver(
+    public boolean deliver(
             RelayMessage message
     ) {
 
@@ -176,7 +181,7 @@ public class ClientSession implements Runnable {
                         message.body()
                 );
 
-        enqueueOutbound(delivery);
+        return enqueueOutbound(delivery);
     }
 
     private void writeLoop(
@@ -252,6 +257,13 @@ public class ClientSession implements Runnable {
                 );
 
         enqueueOutbound(response);
+
+        /*
+         * If this logical client disconnected previously,
+         * its mailbox still contains any unacknowledged
+         * messages. Redeliver them on reconnect.
+         */
+        deliverPendingMessages();
     }
 
     private void handleSend(
@@ -310,6 +322,42 @@ public class ClientSession implements Runnable {
                 registeredClientId,
                 command.messageId()
         );
+    }
+
+    private void deliverPendingMessages() {
+
+        if (registeredClientId == null) {
+            return;
+        }
+
+        ClientContext context =
+                clientRegistry.getClient(
+                        registeredClientId
+                );
+
+        if (context == null) {
+            return;
+        }
+
+        context.getLock().lock();
+
+        try {
+
+            for (RelayMessage message :
+                    context.getMailbox()
+                            .getPendingMessages()) {
+
+                boolean queued =
+                        deliver(message);
+
+                if (!queued) {
+                    return;
+                }
+            }
+
+        } finally {
+            context.getLock().unlock();
+        }
     }
 
     private void deliverToOnlineRecipient(
