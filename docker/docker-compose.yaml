@@ -1,0 +1,47 @@
+services:
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: message_relay
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/main/resources/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U relay -d message_relay"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+
+  relay:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+
+    ports:
+      - "9000:9000"
+
+    environment:
+      RELAY_DB_URL: jdbc:postgresql://postgres:5432/message_relay
+      RELAY_DB_USER: relay
+      RELAY_DB_PASSWORD: relay
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+
+volumes:
+  postgres_data:
