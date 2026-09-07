@@ -5,9 +5,15 @@ import com.messagerelay.domain.SendResult;
 import com.messagerelay.server.ClientContext;
 import com.messagerelay.server.ClientRegistry;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 public class RelayService {
 
     private final ClientRegistry clientRegistry;
+
+    private final Set<String> pendingMessageIds =
+            ConcurrentHashMap.newKeySet();
 
     public RelayService(
             ClientRegistry clientRegistry
@@ -30,6 +36,18 @@ public class RelayService {
             );
         }
 
+        boolean reserved =
+                pendingMessageIds.add(
+                        message.messageId()
+                );
+
+        if (!reserved) {
+            return SendResult.rejected(
+                    message.messageId(),
+                    "Duplicate message ID"
+            );
+        }
+
         recipient.getLock().lock();
 
         try {
@@ -38,6 +56,10 @@ public class RelayService {
                             .add(message);
 
             if (!stored) {
+                pendingMessageIds.remove(
+                        message.messageId()
+                );
+
                 return SendResult.rejected(
                         message.messageId(),
                         "Recipient mailbox is full"
@@ -69,9 +91,18 @@ public class RelayService {
         recipient.getLock().lock();
 
         try {
-            return recipient
-                    .getMailbox()
-                    .acknowledge(messageId);
+            boolean acknowledged =
+                    recipient
+                            .getMailbox()
+                            .acknowledge(messageId);
+
+            if (acknowledged) {
+                pendingMessageIds.remove(
+                        messageId
+                );
+            }
+
+            return acknowledged;
 
         } finally {
             recipient.getLock().unlock();
