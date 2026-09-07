@@ -193,4 +193,122 @@ class RelayServiceTest {
                 getMailboxSize(clientRegistry, "bob")
         );
     }
+
+    @Test
+    void given_message_for_bob_when_different_recipient_acknowledges_then_message_remains_pending() {
+
+        ClientRegistry clientRegistry =
+                new ClientRegistry();
+
+        RelayService relayService =
+                new RelayService(
+                        clientRegistry
+                );
+
+        registerRecipient(
+                clientRegistry,
+                relayService,
+                "bob"
+        );
+
+        registerRecipient(
+                clientRegistry,
+                relayService,
+                "charlie"
+        );
+
+        RelayMessage message =
+                new RelayMessage(
+                        "msg-1",
+                        "alice",
+                        "bob",
+                        "hello bob"
+                );
+
+        SendResult result =
+                relayService.send(message);
+
+        assertTrue(
+                result.accepted()
+        );
+
+        boolean acknowledged =
+                relayService.acknowledge(
+                        "charlie",
+                        "msg-1"
+                );
+
+        assertFalse(
+                acknowledged
+        );
+
+        assertEquals(
+                1,
+                getMailboxSize(
+                        clientRegistry,
+                        "bob"
+                )
+        );
+    }
+
+    @Test
+    void given_message_already_acknowledged_when_acknowledged_again_then_second_ack_is_ignored() {
+
+        ClientRegistry clientRegistry =
+                new ClientRegistry();
+
+        RelayService relayService =
+                new RelayService(
+                        clientRegistry
+                );
+
+        registerRecipient(
+                clientRegistry,
+                relayService,
+                "bob"
+        );
+
+        RelayMessage message =
+                new RelayMessage(
+                        "msg-1",
+                        "alice",
+                        "bob",
+                        "hello bob"
+                );
+
+        SendResult result =
+                relayService.send(message);
+
+        assertTrue(
+                result.accepted()
+        );
+
+        boolean firstAck =
+                relayService.acknowledge(
+                        "bob",
+                        "msg-1"
+                );
+
+        boolean secondAck =
+                relayService.acknowledge(
+                        "bob",
+                        "msg-1"
+                );
+
+        assertTrue(
+                firstAck
+        );
+
+        assertFalse(
+                secondAck
+        );
+
+        assertEquals(
+                0,
+                getMailboxSize(
+                        clientRegistry,
+                        "bob"
+                )
+        );
+    }
 }

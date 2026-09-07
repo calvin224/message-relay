@@ -255,6 +255,16 @@ public class ClientSession implements Runnable {
             RegisterCommand command
     ) {
 
+        if (isBlank(command.clientId())) {
+
+            sendError(
+                    ErrorCode.INVALID_MESSAGE,
+                    "clientId is required"
+            );
+
+            return;
+        }
+
         if (registeredClientId != null) {
 
             sendError(
@@ -304,6 +314,36 @@ public class ClientSession implements Runnable {
             SendCommand command
     ) {
 
+        if (isBlank(command.messageId())) {
+
+            sendError(
+                    ErrorCode.INVALID_MESSAGE,
+                    "messageId is required"
+            );
+
+            return;
+        }
+
+        if (isBlank(command.recipientId())) {
+
+            sendError(
+                    ErrorCode.INVALID_MESSAGE,
+                    "recipientId is required"
+            );
+
+            return;
+        }
+
+        if (command.body() == null) {
+
+            sendError(
+                    ErrorCode.INVALID_MESSAGE,
+                    "body is required"
+            );
+
+            return;
+        }
+
         if (registeredClientId == null) {
 
             SendResultEvent response =
@@ -315,6 +355,7 @@ public class ClientSession implements Runnable {
                     );
 
             enqueueOutbound(response);
+
             return;
         }
 
@@ -347,6 +388,16 @@ public class ClientSession implements Runnable {
     private void handleAck(
             AckCommand command
     ) {
+
+        if (isBlank(command.messageId())) {
+
+            sendError(
+                    ErrorCode.INVALID_MESSAGE,
+                    "messageId is required"
+            );
+
+            return;
+        }
 
         if (registeredClientId == null) {
             return;
@@ -410,6 +461,7 @@ public class ClientSession implements Runnable {
         recipient.getLock().lock();
 
         try {
+
             ClientSession recipientSession =
                     recipient.getActiveSession();
 
@@ -439,10 +491,18 @@ public class ClientSession implements Runnable {
         enqueueOutbound(error);
     }
 
+    private boolean isBlank(
+            String value
+    ) {
+        return value == null
+                || value.isBlank();
+    }
+
     private void closeSocket() {
 
         if (socket == null
                 || socket.isClosed()) {
+
             return;
         }
 

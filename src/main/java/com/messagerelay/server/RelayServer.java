@@ -11,14 +11,20 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 public class RelayServer {
 
     private static final int MAX_ACTIVE_CONNECTIONS =
             100;
+
+    private static final int SHUTDOWN_TIMEOUT_SECONDS =
+            2;
 
     private final int port;
 
@@ -35,6 +41,9 @@ public class RelayServer {
             new Semaphore(
                     MAX_ACTIVE_CONNECTIONS
             );
+
+    private final Set<Socket> activeSockets =
+            ConcurrentHashMap.newKeySet();
 
     private final FrameCodec frameCodec =
             new FrameCodec();
@@ -78,6 +87,8 @@ public class RelayServer {
                         continue;
                     }
 
+                    activeSockets.add(socket);
+
                     System.out.println(
                             "Client connected: "
                                     + socket
@@ -100,11 +111,15 @@ public class RelayServer {
 
             running = false;
 
-            if (!serverSocket.isClosed()) {
+            if (serverSocket != null
+                    && !serverSocket.isClosed()) {
+
                 serverSocket.close();
             }
 
-            executor.shutdown();
+            closeActiveSockets();
+
+            shutdownExecutor();
         }
     }
 
@@ -122,6 +137,7 @@ public class RelayServer {
 
         } finally {
 
+            activeSockets.remove(socket);
             connectionPermits.release();
         }
     }
@@ -168,6 +184,44 @@ public class RelayServer {
                 && !serverSocket.isClosed()) {
 
             serverSocket.close();
+        }
+
+        closeActiveSockets();
+    }
+
+    private void closeActiveSockets() {
+
+        for (Socket socket : activeSockets) {
+
+            try {
+                socket.close();
+
+            } catch (IOException ignored) {
+                // Socket is already being closed.
+            }
+        }
+    }
+
+    private void shutdownExecutor() {
+
+        executor.shutdown();
+
+        try {
+
+            if (!executor.awaitTermination(
+                    SHUTDOWN_TIMEOUT_SECONDS,
+                    TimeUnit.SECONDS
+            )) {
+
+                executor.shutdownNow();
+            }
+
+        } catch (InterruptedException e) {
+
+            executor.shutdownNow();
+
+            Thread.currentThread()
+                    .interrupt();
         }
     }
 }
