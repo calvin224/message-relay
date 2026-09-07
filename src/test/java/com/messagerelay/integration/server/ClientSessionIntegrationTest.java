@@ -3,12 +3,14 @@ package com.messagerelay.integration.server;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.messagerelay.protocol.FrameCodec;
 import com.messagerelay.protocol.ProtocolCodec;
+import com.messagerelay.protocol.commands.AckCommand;
 import com.messagerelay.protocol.commands.RegisterCommand;
 import com.messagerelay.protocol.commands.SendCommand;
 import com.messagerelay.protocol.events.DeliveryEvent;
 import com.messagerelay.protocol.events.RegisteredEvent;
 import com.messagerelay.protocol.events.SendResultEvent;
 import com.messagerelay.protocol.types.MessageType;
+import com.messagerelay.server.ClientContext;
 import com.messagerelay.server.ClientRegistry;
 import com.messagerelay.server.ClientSession;
 import com.messagerelay.service.RelayService;
@@ -275,7 +277,8 @@ class ClientSessionIntegrationTest {
 
     @Test
     @Timeout(5)
-    void messageIsDeliveredToOnlineRecipient() throws Exception {
+    void messageIsDeliveredAndRemovedAfterAcknowledgement()
+            throws Exception {
 
         try (ServerSocket serverSocket =
                      new ServerSocket(0);
@@ -375,6 +378,11 @@ class ClientSessionIntegrationTest {
                         );
 
                 assertEquals(
+                        MessageType.REGISTERED,
+                        aliceRegistered.type()
+                );
+
+                assertEquals(
                         "alice",
                         aliceRegistered.clientId()
                 );
@@ -399,6 +407,11 @@ class ClientSessionIntegrationTest {
                                 ),
                                 RegisteredEvent.class
                         );
+
+                assertEquals(
+                        MessageType.REGISTERED,
+                        bobRegistered.type()
+                );
 
                 assertEquals(
                         "bob",
@@ -426,13 +439,18 @@ class ClientSessionIntegrationTest {
                                 SendResultEvent.class
                         );
 
-                assertTrue(
-                        sendResult.accepted()
+                assertEquals(
+                        MessageType.SEND_RESULT,
+                        sendResult.type()
                 );
 
                 assertEquals(
                         "msg-1",
                         sendResult.messageId()
+                );
+
+                assertTrue(
+                        sendResult.accepted()
                 );
 
                 DeliveryEvent delivery =
@@ -463,6 +481,40 @@ class ClientSessionIntegrationTest {
                         delivery.body()
                 );
 
+                /*
+                 * Delivery alone must NOT remove
+                 * the message from the mailbox.
+                 */
+                assertEquals(
+                        1,
+                        getMailboxSize(
+                                clientRegistry,
+                                "bob"
+                        )
+                );
+
+                AckCommand ack =
+                        new AckCommand(
+                                MessageType.ACK,
+                                "msg-1"
+                        );
+
+                frameCodec.writeFrame(
+                        bobOutput,
+                        protocolCodec.encode(ack)
+                );
+
+                /*
+                 * ACK processing happens on Bob's
+                 * session thread, so wait briefly
+                 * for the mailbox mutation.
+                 */
+                waitForMailboxSize(
+                        clientRegistry,
+                        "bob",
+                        0
+                );
+
                 aliceSocket.close();
                 bobSocket.close();
 
@@ -478,5 +530,57 @@ class ClientSessionIntegrationTest {
                 );
             }
         }
+    }
+
+    private int getMailboxSize(
+            ClientRegistry clientRegistry,
+            String clientId
+    ) {
+
+        ClientContext context =
+                clientRegistry.getClient(clientId);
+
+        context.getLock().lock();
+
+        try {
+            return context
+                    .getMailbox()
+                    .size();
+
+        } finally {
+            context.getLock().unlock();
+        }
+    }
+
+    private void waitForMailboxSize(
+            ClientRegistry clientRegistry,
+            String clientId,
+            int expectedSize
+    ) throws Exception {
+
+        long deadline =
+                System.currentTimeMillis()
+                        + 2_000;
+
+        while (System.currentTimeMillis()
+                < deadline) {
+
+            if (getMailboxSize(
+                    clientRegistry,
+                    clientId
+            ) == expectedSize) {
+
+                return;
+            }
+
+            Thread.sleep(10);
+        }
+
+        throw new AssertionError(
+                "Mailbox for client "
+                        + clientId
+                        + " did not reach size "
+                        + expectedSize
+        );
     }
 }

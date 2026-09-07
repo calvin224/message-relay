@@ -34,7 +34,8 @@ public class RelayService {
 
         try {
             boolean stored =
-                    recipient.getMailbox().add(message);
+                    recipient.getMailbox()
+                            .add(message);
 
             if (!stored) {
                 return SendResult.rejected(
@@ -46,6 +47,31 @@ public class RelayService {
             return SendResult.accepted(
                     message.messageId()
             );
+
+        } finally {
+            recipient.getLock().unlock();
+        }
+    }
+
+    public boolean acknowledge(
+            String recipientId,
+            String messageId
+    ) {
+        ClientContext recipient =
+                clientRegistry.getClient(
+                        recipientId
+                );
+
+        if (recipient == null) {
+            return false;
+        }
+
+        recipient.getLock().lock();
+
+        try {
+            return recipient
+                    .getMailbox()
+                    .acknowledge(messageId);
 
         } finally {
             recipient.getLock().unlock();

@@ -4,6 +4,7 @@ import com.messagerelay.domain.RelayMessage;
 import com.messagerelay.domain.SendResult;
 import com.messagerelay.protocol.FrameCodec;
 import com.messagerelay.protocol.ProtocolCodec;
+import com.messagerelay.protocol.commands.AckCommand;
 import com.messagerelay.protocol.commands.RegisterCommand;
 import com.messagerelay.protocol.commands.SendCommand;
 import com.messagerelay.protocol.events.DeliveryEvent;
@@ -87,21 +88,35 @@ public class ClientSession implements Runnable {
 
                     case REGISTER -> {
                         RegisterCommand command =
-                                protocolCodec.decodeRegister(json);
+                                protocolCodec.decodeRegister(
+                                        json
+                                );
 
                         handleRegister(command);
                     }
 
                     case SEND -> {
                         SendCommand command =
-                                protocolCodec.decodeSend(json);
+                                protocolCodec.decodeSend(
+                                        json
+                                );
 
                         handleSend(command);
                     }
 
+                    case ACK -> {
+                        AckCommand command =
+                                protocolCodec.decodeAck(
+                                        json
+                                );
+
+                        handleAck(command);
+                    }
+
                     default -> sendError(
                             ErrorCode.INVALID_MESSAGE_TYPE,
-                            "Unsupported message type: " + type
+                            "Unsupported message type: "
+                                    + type
                     );
                 }
             }
@@ -149,13 +164,29 @@ public class ClientSession implements Runnable {
         return queued;
     }
 
+    public void deliver(
+            RelayMessage message
+    ) {
+
+        DeliveryEvent delivery =
+                new DeliveryEvent(
+                        MessageType.DELIVERY,
+                        message.messageId(),
+                        message.senderId(),
+                        message.body()
+                );
+
+        enqueueOutbound(delivery);
+    }
+
     private void writeLoop(
             DataOutputStream output
     ) {
 
         try {
 
-            while (!Thread.currentThread().isInterrupted()) {
+            while (!Thread.currentThread()
+                    .isInterrupted()) {
 
                 Object message =
                         outboundMessages.take();
@@ -267,47 +298,18 @@ public class ClientSession implements Runnable {
         }
     }
 
-    private void sendError(
-            ErrorCode code,
-            String message
+    private void handleAck(
+            AckCommand command
     ) {
 
-        ErrorEvent error =
-                new ErrorEvent(
-                        MessageType.ERROR,
-                        code,
-                        message
-                );
-
-        enqueueOutbound(error);
-    }
-
-    private void closeSocket() {
-
-        if (socket == null || socket.isClosed()) {
+        if (registeredClientId == null) {
             return;
         }
 
-        try {
-            socket.close();
-        } catch (IOException ignored) {
-            // Socket is already being closed.
-        }
-    }
-
-    public void deliver(
-            RelayMessage message
-    ) {
-
-        DeliveryEvent delivery =
-                new DeliveryEvent(
-                        MessageType.DELIVERY,
-                        message.messageId(),
-                        message.senderId(),
-                        message.body()
-                );
-
-        enqueueOutbound(delivery);
+        relayService.acknowledge(
+                registeredClientId,
+                command.messageId()
+        );
     }
 
     private void deliverToOnlineRecipient(
@@ -330,11 +332,43 @@ public class ClientSession implements Runnable {
                     recipient.getActiveSession();
 
             if (recipientSession != null) {
-                recipientSession.deliver(message);
+                recipientSession.deliver(
+                        message
+                );
             }
 
         } finally {
             recipient.getLock().unlock();
+        }
+    }
+
+    private void sendError(
+            ErrorCode code,
+            String message
+    ) {
+
+        ErrorEvent error =
+                new ErrorEvent(
+                        MessageType.ERROR,
+                        code,
+                        message
+                );
+
+        enqueueOutbound(error);
+    }
+
+    private void closeSocket() {
+
+        if (socket == null
+                || socket.isClosed()) {
+            return;
+        }
+
+        try {
+            socket.close();
+
+        } catch (IOException ignored) {
+            // Socket is already being closed.
         }
     }
 }

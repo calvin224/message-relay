@@ -1,4 +1,4 @@
-package com.messagerelay.server;
+package com.messagerelay.server.mailbox;
 
 import com.messagerelay.domain.RelayMessage;
 
@@ -13,7 +13,9 @@ public class Mailbox {
     private final Deque<RelayMessage> messages =
             new ArrayDeque<>();
 
-    public boolean add(RelayMessage message) {
+    public boolean add(
+            RelayMessage message
+    ) {
         if (messages.size() >= MAX_MESSAGES) {
             return false;
         }
@@ -26,10 +28,13 @@ public class Mailbox {
         return List.copyOf(messages);
     }
 
-    public boolean acknowledge(String messageId) {
+    public boolean acknowledge(
+            String messageId
+    ) {
         return messages.removeIf(
                 message ->
-                        message.messageId().equals(messageId)
+                        message.messageId()
+                                .equals(messageId)
         );
     }
 

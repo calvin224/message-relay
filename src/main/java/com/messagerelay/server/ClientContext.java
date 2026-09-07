@@ -1,7 +1,7 @@
 package com.messagerelay.server;
 
 import java.util.concurrent.locks.ReentrantLock;
-import com.messagerelay.server.Mailbox;
+import com.messagerelay.server.mailbox.Mailbox;
 
 public class ClientContext {
 
