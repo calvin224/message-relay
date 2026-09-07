@@ -3,6 +3,7 @@ package com.messagerelay.service;
 import com.messagerelay.domain.RelayMessage;
 import com.messagerelay.domain.SendResult;
 import com.messagerelay.repository.RelayMessageRepository;
+import com.messagerelay.repository.RepositoryException;
 import com.messagerelay.server.ClientContext;
 import com.messagerelay.server.ClientRegistry;
 
@@ -27,7 +28,9 @@ public class RelayService {
                 new RelayMessageRepository() {
 
                     @Override
-                    public void save(RelayMessage message) {
+                    public void save(
+                            RelayMessage message
+                    ) {
                         // In-memory core mode.
                     }
 
@@ -51,11 +54,71 @@ public class RelayService {
             ClientRegistry clientRegistry,
             RelayMessageRepository messageRepository
     ) {
+
         this.clientRegistry =
                 clientRegistry;
 
         this.messageRepository =
                 messageRepository;
+    }
+
+    public void recoverPendingMessages() {
+
+        List<RelayMessage> pendingMessages =
+                messageRepository.findAllPending();
+
+        for (RelayMessage message :
+                pendingMessages) {
+
+            boolean reserved =
+                    pendingMessageIds.add(
+                            message.messageId()
+                    );
+
+            if (!reserved) {
+
+                throw new IllegalStateException(
+                        "Duplicate pending message ID during recovery: "
+                                + message.messageId()
+                );
+            }
+
+            ClientContext recipient =
+                    clientRegistry.getOrCreateClient(
+                            message.recipientId()
+                    );
+
+            recipient.getLock().lock();
+
+            try {
+
+                if (recipient.getMailbox()
+                        .isFull()) {
+
+                    throw new IllegalStateException(
+                            "Recovered mailbox exceeds limit for recipient: "
+                                    + message.recipientId()
+                    );
+                }
+
+                boolean stored =
+                        recipient.getMailbox()
+                                .add(message);
+
+                if (!stored) {
+
+                    throw new IllegalStateException(
+                            "Failed to recover message: "
+                                    + message.messageId()
+                    );
+                }
+
+            } finally {
+
+                recipient.getLock()
+                        .unlock();
+            }
+        }
     }
 
     public SendResult send(
@@ -68,6 +131,7 @@ public class RelayService {
                 );
 
         if (recipient == null) {
+
             return SendResult.rejected(
                     message.messageId(),
                     "Unknown recipient"
@@ -80,6 +144,7 @@ public class RelayService {
                 );
 
         if (!reserved) {
+
             return SendResult.rejected(
                     message.messageId(),
                     "Duplicate message ID"
@@ -89,6 +154,19 @@ public class RelayService {
         recipient.getLock().lock();
 
         try {
+
+            if (recipient.getMailbox()
+                    .isFull()) {
+
+                pendingMessageIds.remove(
+                        message.messageId()
+                );
+
+                return SendResult.rejected(
+                        message.messageId(),
+                        "Recipient mailbox is full"
+                );
+            }
 
             boolean stored =
                     recipient.getMailbox()
@@ -106,12 +184,45 @@ public class RelayService {
                 );
             }
 
+            try {
+
+                /*
+                 * ACCEPTED is only returned after
+                 * durable persistence succeeds.
+                 */
+                messageRepository.save(
+                        message
+                );
+
+            } catch (RepositoryException e) {
+
+                /*
+                 * Persistence failed, so roll back
+                 * the in-memory message.
+                 */
+                recipient.getMailbox()
+                        .acknowledge(
+                                message.messageId()
+                        );
+
+                pendingMessageIds.remove(
+                        message.messageId()
+                );
+
+                return SendResult.rejected(
+                        message.messageId(),
+                        "Message storage unavailable"
+                );
+            }
+
             return SendResult.accepted(
                     message.messageId()
             );
 
         } finally {
-            recipient.getLock().unlock();
+
+            recipient.getLock()
+                    .unlock();
         }
     }
 
@@ -133,10 +244,53 @@ public class RelayService {
 
         try {
 
+            boolean pending =
+                    recipient.getMailbox()
+                            .getPendingMessages()
+                            .stream()
+                            .anyMatch(
+                                    message ->
+                                            message.messageId()
+                                                    .equals(messageId)
+                            );
+
+            /*
+             * Wrong recipient, stale ACK or
+             * repeated ACK.
+             */
+            if (!pending) {
+                return false;
+            }
+
+            try {
+
+                /*
+                 * Remove durable state first.
+                 *
+                 * If storage fails, leave the
+                 * in-memory copy available for
+                 * redelivery.
+                 */
+                boolean deleted =
+                        messageRepository.delete(
+                                recipientId,
+                                messageId
+                        );
+
+                if (!deleted) {
+                    return false;
+                }
+
+            } catch (RepositoryException e) {
+
+                return false;
+            }
+
             boolean acknowledged =
-                    recipient
-                            .getMailbox()
-                            .acknowledge(messageId);
+                    recipient.getMailbox()
+                            .acknowledge(
+                                    messageId
+                            );
 
             if (acknowledged) {
 
@@ -148,7 +302,9 @@ public class RelayService {
             return acknowledged;
 
         } finally {
-            recipient.getLock().unlock();
+
+            recipient.getLock()
+                    .unlock();
         }
     }
 }

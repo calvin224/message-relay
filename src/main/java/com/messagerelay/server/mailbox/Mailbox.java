@@ -38,6 +38,10 @@ public class Mailbox {
         );
     }
 
+    public boolean isFull() {
+        return messages.size() >= MAX_MESSAGES;
+    }
+
     public int size() {
         return messages.size();
     }

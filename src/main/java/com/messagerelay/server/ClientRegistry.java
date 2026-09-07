@@ -12,15 +12,16 @@ public class ClientRegistry {
             String clientId,
             ClientSession session
     ) {
+
         ClientContext context =
-                clients.computeIfAbsent(
-                        clientId,
-                        ClientContext::new
+                getOrCreateClient(
+                        clientId
                 );
 
         context.getLock().lock();
 
         try {
+
             if (context.getActiveSession() != null) {
                 return false;
             }
@@ -30,7 +31,9 @@ public class ClientRegistry {
             return true;
 
         } finally {
-            context.getLock().unlock();
+
+            context.getLock()
+                    .unlock();
         }
     }
 
@@ -38,6 +41,7 @@ public class ClientRegistry {
             String clientId,
             ClientSession session
     ) {
+
         ClientContext context =
                 clients.get(clientId);
 
@@ -48,12 +52,17 @@ public class ClientRegistry {
         context.getLock().lock();
 
         try {
-            if (context.getActiveSession() == session) {
+
+            if (context.getActiveSession()
+                    == session) {
+
                 context.setActiveSession(null);
             }
 
         } finally {
-            context.getLock().unlock();
+
+            context.getLock()
+                    .unlock();
         }
     }
 
@@ -61,5 +70,15 @@ public class ClientRegistry {
             String clientId
     ) {
         return clients.get(clientId);
+    }
+
+    public ClientContext getOrCreateClient(
+            String clientId
+    ) {
+
+        return clients.computeIfAbsent(
+                clientId,
+                ClientContext::new
+        );
     }
 }

@@ -5,6 +5,7 @@ import com.messagerelay.protocol.ProtocolCodec;
 import com.messagerelay.protocol.events.ErrorEvent;
 import com.messagerelay.protocol.types.ErrorCode;
 import com.messagerelay.protocol.types.MessageType;
+import com.messagerelay.repository.RelayMessageRepository;
 import com.messagerelay.service.RelayService;
 
 import java.io.DataOutputStream;
@@ -31,8 +32,7 @@ public class RelayServer {
     private final ClientRegistry clientRegistry =
             new ClientRegistry();
 
-    private final RelayService relayService =
-            new RelayService(clientRegistry);
+    private final RelayService relayService;
 
     private final ExecutorService executor =
             Executors.newVirtualThreadPerTaskExecutor();
@@ -55,11 +55,40 @@ public class RelayServer {
 
     private ServerSocket serverSocket;
 
-    public RelayServer(int port) {
+    public RelayServer(
+            int port
+    ) {
+
         this.port = port;
+
+        this.relayService =
+                new RelayService(
+                        clientRegistry
+                );
     }
 
-    public void start() throws IOException {
+    public RelayServer(
+            int port,
+            RelayMessageRepository messageRepository
+    ) {
+
+        this.port = port;
+
+        this.relayService =
+                new RelayService(
+                        clientRegistry,
+                        messageRepository
+                );
+    }
+
+    public void start()
+            throws IOException {
+
+        /*
+         * Restore queued and unacknowledged
+         * messages before accepting clients.
+         */
+        relayService.recoverPendingMessages();
 
         serverSocket =
                 new ServerSocket(port);
@@ -176,7 +205,8 @@ public class RelayServer {
         }
     }
 
-    public void stop() throws IOException {
+    public void stop()
+            throws IOException {
 
         running = false;
 
@@ -191,12 +221,15 @@ public class RelayServer {
 
     private void closeActiveSockets() {
 
-        for (Socket socket : activeSockets) {
+        for (Socket socket :
+                activeSockets) {
 
             try {
+
                 socket.close();
 
             } catch (IOException ignored) {
+
                 // Socket is already being closed.
             }
         }
