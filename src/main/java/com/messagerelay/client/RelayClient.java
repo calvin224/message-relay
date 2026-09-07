@@ -22,10 +22,11 @@ public class RelayClient {
     private static final int PORT =
             9000;
 
-    static void main(String[] args)
+    public static void main(String[] args)
             throws Exception {
 
         if (args.length == 0) {
+
             System.out.println(
                     "Usage: RelayClient <clientId>"
             );
@@ -177,7 +178,7 @@ public class RelayClient {
         );
 
         System.out.println(
-                "Connected as: "
+                "Connecting as: "
                         + clientId
         );
     }
@@ -305,6 +306,7 @@ public class RelayClient {
                         );
 
                 System.out.println();
+
                 System.out.println(
                         "< " + message
                 );
@@ -315,6 +317,7 @@ public class RelayClient {
         } catch (EOFException e) {
 
             System.out.println();
+
             System.out.println(
                     "Server closed the connection."
             );
@@ -325,6 +328,7 @@ public class RelayClient {
                     .isInterrupted()) {
 
                 System.out.println();
+
                 System.out.println(
                         "Connection closed: "
                                 + e.getMessage()
@@ -336,6 +340,7 @@ public class RelayClient {
     private static void printHelp() {
 
         System.out.println();
+
         System.out.println(
                 "Commands:"
         );

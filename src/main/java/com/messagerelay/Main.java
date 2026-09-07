@@ -8,7 +8,7 @@ public class Main {
 
     private static final int PORT = 9000;
 
-    static void main() throws Exception {
+    public static void main(String[] args) throws Exception {
 
         RelayServer server =
                 new RelayServer(PORT);
