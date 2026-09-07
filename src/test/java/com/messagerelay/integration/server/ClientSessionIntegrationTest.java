@@ -865,6 +865,274 @@ class ClientSessionIntegrationTest {
             );
         }
     }
+
+    @Test
+    @Timeout(7)
+    void unacknowledgedMessageIsRedeliveredAfterReconnect()
+            throws Exception {
+
+        try (ServerSocket serverSocket =
+                     new ServerSocket(0)) {
+
+            ClientRegistry clientRegistry =
+                    new ClientRegistry();
+
+            RelayService relayService =
+                    new RelayService(
+                            clientRegistry
+                    );
+
+            /*
+             * Connect Alice.
+             */
+            Socket aliceSocket =
+                    new Socket(
+                            "localhost",
+                            serverSocket.getLocalPort()
+                    );
+
+            Socket aliceServerSocket =
+                    serverSocket.accept();
+
+            Thread aliceSession =
+                    Thread.ofVirtual().start(
+                            new ClientSession(
+                                    aliceServerSocket,
+                                    clientRegistry,
+                                    relayService
+                            )
+                    );
+
+            aliceSocket.setSoTimeout(2_000);
+
+            DataInputStream aliceInput =
+                    new DataInputStream(
+                            aliceSocket.getInputStream()
+                    );
+
+            DataOutputStream aliceOutput =
+                    new DataOutputStream(
+                            aliceSocket.getOutputStream()
+                    );
+
+            frameCodec.writeFrame(
+                    aliceOutput,
+                    protocolCodec.encode(
+                            new RegisterCommand(
+                                    MessageType.REGISTER,
+                                    "alice"
+                            )
+                    )
+            );
+
+            frameCodec.readFrame(aliceInput);
+
+            /*
+             * Connect Bob.
+             */
+            Socket bobSocket =
+                    new Socket(
+                            "localhost",
+                            serverSocket.getLocalPort()
+                    );
+
+            Socket bobServerSocket =
+                    serverSocket.accept();
+
+            Thread firstBobSession =
+                    Thread.ofVirtual().start(
+                            new ClientSession(
+                                    bobServerSocket,
+                                    clientRegistry,
+                                    relayService
+                            )
+                    );
+
+            bobSocket.setSoTimeout(2_000);
+
+            DataInputStream bobInput =
+                    new DataInputStream(
+                            bobSocket.getInputStream()
+                    );
+
+            DataOutputStream bobOutput =
+                    new DataOutputStream(
+                            bobSocket.getOutputStream()
+                    );
+
+            frameCodec.writeFrame(
+                    bobOutput,
+                    protocolCodec.encode(
+                            new RegisterCommand(
+                                    MessageType.REGISTER,
+                                    "bob"
+                            )
+                    )
+            );
+
+            frameCodec.readFrame(bobInput);
+
+            /*
+             * Alice sends while Bob is online.
+             */
+            frameCodec.writeFrame(
+                    aliceOutput,
+                    protocolCodec.encode(
+                            new SendCommand(
+                                    MessageType.SEND,
+                                    "msg-redelivery-1",
+                                    "bob",
+                                    "deliver me again"
+                            )
+                    )
+            );
+
+            SendResultEvent sendResult =
+                    objectMapper.readValue(
+                            frameCodec.readFrame(
+                                    aliceInput
+                            ),
+                            SendResultEvent.class
+                    );
+
+            assertTrue(
+                    sendResult.accepted()
+            );
+
+            DeliveryEvent firstDelivery =
+                    objectMapper.readValue(
+                            frameCodec.readFrame(
+                                    bobInput
+                            ),
+                            DeliveryEvent.class
+                    );
+
+            assertEquals(
+                    "msg-redelivery-1",
+                    firstDelivery.messageId()
+            );
+
+            /*
+             * Bob received it but has NOT ACKed it.
+             */
+            assertEquals(
+                    1,
+                    getMailboxSize(
+                            clientRegistry,
+                            "bob"
+                    )
+            );
+
+            bobSocket.close();
+
+            firstBobSession.join(2_000);
+
+            assertFalse(
+                    firstBobSession.isAlive()
+            );
+
+            waitForClientDisconnected(
+                    clientRegistry,
+                    "bob"
+            );
+
+            /*
+             * Bob reconnects.
+             */
+            Socket reconnectedBobSocket =
+                    new Socket(
+                            "localhost",
+                            serverSocket.getLocalPort()
+                    );
+
+            Socket reconnectedBobServerSocket =
+                    serverSocket.accept();
+
+            Thread secondBobSession =
+                    Thread.ofVirtual().start(
+                            new ClientSession(
+                                    reconnectedBobServerSocket,
+                                    clientRegistry,
+                                    relayService
+                            )
+                    );
+
+            reconnectedBobSocket.setSoTimeout(
+                    2_000
+            );
+
+            DataInputStream reconnectedBobInput =
+                    new DataInputStream(
+                            reconnectedBobSocket
+                                    .getInputStream()
+                    );
+
+            DataOutputStream reconnectedBobOutput =
+                    new DataOutputStream(
+                            reconnectedBobSocket
+                                    .getOutputStream()
+                    );
+
+            frameCodec.writeFrame(
+                    reconnectedBobOutput,
+                    protocolCodec.encode(
+                            new RegisterCommand(
+                                    MessageType.REGISTER,
+                                    "bob"
+                            )
+                    )
+            );
+
+            frameCodec.readFrame(
+                    reconnectedBobInput
+            );
+
+            DeliveryEvent secondDelivery =
+                    objectMapper.readValue(
+                            frameCodec.readFrame(
+                                    reconnectedBobInput
+                            ),
+                            DeliveryEvent.class
+                    );
+
+            assertEquals(
+                    firstDelivery.messageId(),
+                    secondDelivery.messageId()
+            );
+
+            assertEquals(
+                    "deliver me again",
+                    secondDelivery.body()
+            );
+
+            /*
+             * Still pending because Bob still
+             * has not ACKed it.
+             */
+            assertEquals(
+                    1,
+                    getMailboxSize(
+                            clientRegistry,
+                            "bob"
+                    )
+            );
+
+            aliceSocket.close();
+            reconnectedBobSocket.close();
+
+            aliceSession.join(2_000);
+            secondBobSession.join(2_000);
+
+            assertFalse(
+                    aliceSession.isAlive()
+            );
+
+            assertFalse(
+                    secondBobSession.isAlive()
+            );
+        }
+    }
+
     private void waitForClientDisconnected(
             ClientRegistry clientRegistry,
             String clientId
