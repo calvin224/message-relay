@@ -5,6 +5,7 @@ import com.messagerelay.protocol.FrameCodec;
 import com.messagerelay.protocol.ProtocolCodec;
 import com.messagerelay.protocol.commands.RegisterCommand;
 import com.messagerelay.protocol.commands.SendCommand;
+import com.messagerelay.protocol.events.DeliveryEvent;
 import com.messagerelay.protocol.events.RegisteredEvent;
 import com.messagerelay.protocol.events.SendResultEvent;
 import com.messagerelay.protocol.types.MessageType;
@@ -267,6 +268,213 @@ class ClientSessionIntegrationTest {
 
                 assertFalse(
                         sessionThread.isAlive()
+                );
+            }
+        }
+    }
+
+    @Test
+    @Timeout(5)
+    void messageIsDeliveredToOnlineRecipient() throws Exception {
+
+        try (ServerSocket serverSocket =
+                     new ServerSocket(0);
+
+             Socket aliceSocket =
+                     new Socket(
+                             "localhost",
+                             serverSocket.getLocalPort()
+                     )) {
+
+            Socket aliceServerSocket =
+                    serverSocket.accept();
+
+            Socket bobSocket =
+                    new Socket(
+                            "localhost",
+                            serverSocket.getLocalPort()
+                    );
+
+            Socket bobServerSocket =
+                    serverSocket.accept();
+
+            try (
+                    bobSocket;
+                    aliceServerSocket;
+                    bobServerSocket
+            ) {
+
+                ClientRegistry clientRegistry =
+                        new ClientRegistry();
+
+                RelayService relayService =
+                        new RelayService(
+                                clientRegistry
+                        );
+
+                Thread aliceSessionThread =
+                        Thread.ofVirtual().start(
+                                new ClientSession(
+                                        aliceServerSocket,
+                                        clientRegistry,
+                                        relayService
+                                )
+                        );
+
+                Thread bobSessionThread =
+                        Thread.ofVirtual().start(
+                                new ClientSession(
+                                        bobServerSocket,
+                                        clientRegistry,
+                                        relayService
+                                )
+                        );
+
+                aliceSocket.setSoTimeout(2_000);
+                bobSocket.setSoTimeout(2_000);
+
+                DataInputStream aliceInput =
+                        new DataInputStream(
+                                aliceSocket.getInputStream()
+                        );
+
+                DataOutputStream aliceOutput =
+                        new DataOutputStream(
+                                aliceSocket.getOutputStream()
+                        );
+
+                DataInputStream bobInput =
+                        new DataInputStream(
+                                bobSocket.getInputStream()
+                        );
+
+                DataOutputStream bobOutput =
+                        new DataOutputStream(
+                                bobSocket.getOutputStream()
+                        );
+
+                RegisterCommand aliceRegister =
+                        new RegisterCommand(
+                                MessageType.REGISTER,
+                                "alice"
+                        );
+
+                frameCodec.writeFrame(
+                        aliceOutput,
+                        protocolCodec.encode(
+                                aliceRegister
+                        )
+                );
+
+                RegisteredEvent aliceRegistered =
+                        objectMapper.readValue(
+                                frameCodec.readFrame(
+                                        aliceInput
+                                ),
+                                RegisteredEvent.class
+                        );
+
+                assertEquals(
+                        "alice",
+                        aliceRegistered.clientId()
+                );
+
+                RegisterCommand bobRegister =
+                        new RegisterCommand(
+                                MessageType.REGISTER,
+                                "bob"
+                        );
+
+                frameCodec.writeFrame(
+                        bobOutput,
+                        protocolCodec.encode(
+                                bobRegister
+                        )
+                );
+
+                RegisteredEvent bobRegistered =
+                        objectMapper.readValue(
+                                frameCodec.readFrame(
+                                        bobInput
+                                ),
+                                RegisteredEvent.class
+                        );
+
+                assertEquals(
+                        "bob",
+                        bobRegistered.clientId()
+                );
+
+                SendCommand send =
+                        new SendCommand(
+                                MessageType.SEND,
+                                "msg-1",
+                                "bob",
+                                "hello bob"
+                        );
+
+                frameCodec.writeFrame(
+                        aliceOutput,
+                        protocolCodec.encode(send)
+                );
+
+                SendResultEvent sendResult =
+                        objectMapper.readValue(
+                                frameCodec.readFrame(
+                                        aliceInput
+                                ),
+                                SendResultEvent.class
+                        );
+
+                assertTrue(
+                        sendResult.accepted()
+                );
+
+                assertEquals(
+                        "msg-1",
+                        sendResult.messageId()
+                );
+
+                DeliveryEvent delivery =
+                        objectMapper.readValue(
+                                frameCodec.readFrame(
+                                        bobInput
+                                ),
+                                DeliveryEvent.class
+                        );
+
+                assertEquals(
+                        MessageType.DELIVERY,
+                        delivery.type()
+                );
+
+                assertEquals(
+                        "msg-1",
+                        delivery.messageId()
+                );
+
+                assertEquals(
+                        "alice",
+                        delivery.senderId()
+                );
+
+                assertEquals(
+                        "hello bob",
+                        delivery.body()
+                );
+
+                aliceSocket.close();
+                bobSocket.close();
+
+                aliceSessionThread.join(2_000);
+                bobSessionThread.join(2_000);
+
+                assertFalse(
+                        aliceSessionThread.isAlive()
+                );
+
+                assertFalse(
+                        bobSessionThread.isAlive()
                 );
             }
         }
