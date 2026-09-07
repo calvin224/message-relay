@@ -6,6 +6,7 @@ import com.messagerelay.protocol.FrameCodec;
 import com.messagerelay.protocol.ProtocolCodec;
 import com.messagerelay.protocol.commands.RegisterCommand;
 import com.messagerelay.protocol.commands.SendCommand;
+import com.messagerelay.protocol.events.DeliveryEvent;
 import com.messagerelay.protocol.events.ErrorEvent;
 import com.messagerelay.protocol.events.RegisteredEvent;
 import com.messagerelay.protocol.events.SendResultEvent;
@@ -260,6 +261,10 @@ public class ClientSession implements Runnable {
                 );
 
         enqueueOutbound(response);
+
+        if (result.accepted()) {
+            deliverToOnlineRecipient(message);
+        }
     }
 
     private void sendError(
@@ -287,6 +292,49 @@ public class ClientSession implements Runnable {
             socket.close();
         } catch (IOException ignored) {
             // Socket is already being closed.
+        }
+    }
+
+    public void deliver(
+            RelayMessage message
+    ) {
+
+        DeliveryEvent delivery =
+                new DeliveryEvent(
+                        MessageType.DELIVERY,
+                        message.messageId(),
+                        message.senderId(),
+                        message.body()
+                );
+
+        enqueueOutbound(delivery);
+    }
+
+    private void deliverToOnlineRecipient(
+            RelayMessage message
+    ) {
+
+        ClientContext recipient =
+                clientRegistry.getClient(
+                        message.recipientId()
+                );
+
+        if (recipient == null) {
+            return;
+        }
+
+        recipient.getLock().lock();
+
+        try {
+            ClientSession recipientSession =
+                    recipient.getActiveSession();
+
+            if (recipientSession != null) {
+                recipientSession.deliver(message);
+            }
+
+        } finally {
+            recipient.getLock().unlock();
         }
     }
 }
