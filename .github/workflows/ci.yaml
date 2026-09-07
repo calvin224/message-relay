@@ -66,7 +66,7 @@ jobs:
       - name: Run unit tests
         run: >
           ./mvnw --batch-mode --no-transfer-progress
-          -Dtest='%regex[com\.messagerelay\.unit\..*Test]'
+          -Dtest='com/messagerelay/unit/**/*Test.java'
           test
 
 
@@ -92,7 +92,7 @@ jobs:
       - name: Run integration tests
         run: >
           ./mvnw --batch-mode --no-transfer-progress
-          -Dtest='%regex[com\.messagerelay\.integration\..*Test]'
+          -Dtest='com/messagerelay/integration/**/*Test.java'
           test
 
 
@@ -122,7 +122,7 @@ jobs:
       - name: Make Maven wrapper executable
         run: chmod +x mvnw
 
-      - name: Run tests and generate JaCoCo coverage
+      - name: Run full test suite and generate JaCoCo coverage
         run: >
           ./mvnw --batch-mode --no-transfer-progress
           clean test jacoco:report
