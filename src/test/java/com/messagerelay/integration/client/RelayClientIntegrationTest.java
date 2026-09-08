@@ -106,7 +106,7 @@ class RelayClientIntegrationTest {
             readEvent(input, RegisterCommand.class);
             connection.shutdownOutput();
             assertEquals("Server closed the connection.",
-                    client.awaitOutput("Server closed the connection."));
+                    client.awaitOutput("Server closed the connection.").replaceFirst("^> ", ""));
             client.sendLine("quit");
             client.awaitSuccessfulExit();
         }
@@ -124,7 +124,7 @@ class RelayClientIntegrationTest {
             output.writeInt(0);
             output.flush();
             assertEquals("Connection closed: Invalid frame length: 0",
-                    client.awaitOutput("Connection closed: Invalid frame length: 0"));
+                    client.awaitOutput("Connection closed: Invalid frame length: 0").replaceFirst("^> ", ""));
             client.sendLine("quit");
             client.awaitSuccessfulExit();
         }
