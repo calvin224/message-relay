@@ -1,153 +1,584 @@
 # Message Relay
 
-A small Java TCP client/server relay for the technical exercise. The server owns registration, in-memory mailboxes, delivery, reconnect redelivery, and acknowledgements. Jackson handles JSON; no broker or messaging framework is used.
+A small Java TCP client/server messaging relay built for the Candidate Technical Exercise.
 
-The implementation supports registration, addressed messaging, explicit acknowledgements, offline retention, and redelivery after reconnect. The core scenarios are covered by automated tests. Remaining resource, lifecycle, and client limitations are documented below.
+The relay implements:
 
-See [APPROACH.md](APPROACH.md) for acceptance criteria, the wire protocol, concurrency decisions, test boundaries, and a prioritised completion plan.
+- unique client registration,
+- addressed messaging,
+- explicit send acceptance/rejection,
+- recipient acknowledgements,
+- bounded in-memory mailboxes,
+- offline message retention,
+- reconnect and redelivery,
+- malformed-input handling,
+- connection and buffer limits,
+- predictable shutdown,
+- an interactive command-line client,
+- CI packaging,
+- and a reproducible Docker image.
 
-## Implementation progress
+The relay behaviour is implemented directly in the application. Jackson is used for JSON serialization; no message broker or messaging framework is used.
 
-**Latest completed step: reject messages that cannot fit in a delivery frame.** Previously, a SEND could fit the 65,536-byte limit, but adding the sender ID to DELIVERY could push it over that limit. The server would accept and retain the message, then close the recipient connection when delivery failed. Reconnecting would encounter the same undeliverable message again.
+See [`APPROACH.md`](APPROACH.md) for the architecture, protocol, concurrency model, delivery semantics, trade-offs, known limitations, and design decisions.
 
-The server now checks the final DELIVERY size before accepting the message. An oversized delivery is rejected without consuming mailbox space or reserving its ID. A delivery exactly at the limit still works. This addresses the exercise requirements for message-size bounds and explicit send acceptance/rejection.
+---
 
-| Area | Progress |
-| --- | --- |
-| Registration, send, delivery, ACK, offline retention, reconnect | Implemented; core scenarios covered by tests |
-| Delivery-size validation | Implemented and regression-tested; 29 test cases pass and the executable JAR builds |
-| Retained identities and aggregate memory | Next: cap retained identities while preserving existing clients and queued messages |
-| Deadlines, shutdown, concurrency edge cases | Further core work required |
-| Complete terminal demonstration | Planned: send, receive, explicit ACK, disconnect, and reconnect |
-| FIFO, Docker, restart persistence | Optional extensions after the core requirements |
+## Core Requirements
 
-See [the fix rationale](APPROACH.md#completed-step-delivery-size-validation) and [remaining work](APPROACH.md#remaining-work-in-priority-order) for details. This progress describes the current implementation, not a claim that every exercise requirement is complete.
+| # | Requirement | Status |
+| --- | --- | --- |
+| 1 | A client registers with a unique name/ID and multiple clients may be registered | ✅ Implemented |
+| 2 | Either client can send a uniquely identified message to the other | ✅ Implemented |
+| 3 | The service confirms whether a SEND was accepted or rejected | ✅ Implemented |
+| 4 | The recipient receives the message and explicitly acknowledges it | ✅ Implemented |
+| 5 | Messages sent while the recipient is offline are retained within defined limits | ✅ Implemented |
+| 6 | A client can reconnect with the same identity and receive offline messages | ✅ Implemented |
+| 7 | Delivered-but-unacknowledged messages remain available after reconnect | ✅ Implemented |
 
-## Prerequisites
+Delivery is **at least once** within the lifetime of the running relay process.
 
-- JDK 25, with `JAVA_HOME` pointing to the JDK and its `bin` directory on `PATH`.
-- The checked-in Maven wrapper downloads Maven 3.9.16. Alternatively, use an installed Maven 3.9.16.
-- Internet access for the first Maven/dependency download; no database, cloud account, or external service is needed to run or test the relay.
-- TCP port 9000 must be free to run the application. Tests use temporary local ports.
+An accepted message remains pending until the correct recipient acknowledges it. If a client disconnects before ACKing a delivered message, that message may be delivered again after reconnect.
 
-Runtime dependency: Jackson Databind 2.19.2 and its transitive dependencies. Tests use JUnit Jupiter 5.13.4. Build/plugin versions are in `pom.xml`; Java 25 is the current compilation target.
+---
 
-## Build and test
+# Prerequisites
 
-Run commands from the repository root.
+## Local build
 
-Windows PowerShell:
+Required:
+
+- JDK 25
+- `JAVA_HOME` configured for JDK 25
+- TCP port `9000` available when running the relay
+- Internet access during the first Maven dependency download
+
+The Maven Wrapper is included, so a separate Maven installation is not required.
+
+## Docker
+
+For container execution:
+
+- Docker Desktop or another Docker Engine
+- Docker Compose support
+
+No database, message broker, cloud account, credentials, or external service is required.
+
+---
+
+# Build
+
+Run all commands from the repository root.
+
+## Windows PowerShell
 
 ```powershell
 .\mvnw.cmd --batch-mode --no-transfer-progress clean verify
 ```
 
-Linux/macOS:
+## Linux / macOS
 
 ```sh
 chmod +x mvnw
 ./mvnw --batch-mode --no-transfer-progress clean verify
 ```
 
-This compiles the source, runs all unit and socket integration tests, packages the executable JAR, and generates the JaCoCo report. Integration tests run through Surefire as part of `test`; no separate integration-test profile is needed.
+`clean verify`:
 
-For tests only:
+1. compiles the application,
+2. runs unit tests,
+3. runs socket integration tests,
+4. generates the JaCoCo coverage report,
+5. creates the executable JAR.
 
-```powershell
-.\mvnw.cmd --batch-mode --no-transfer-progress test
+---
+
+# Runnable Artifact
+
+The executable artifact is:
+
+```text
+target/message-relay-1.0.0-SNAPSHOT.jar
 ```
 
-On Linux/macOS, substitute `./mvnw`. With installed Maven, substitute `mvn` for the wrapper in either command.
+It is a shaded JAR containing the required runtime dependencies.
 
-Outputs:
-
-| Output | Location |
-| --- | --- |
-| Executable JAR, including runtime dependencies | `target/message-relay-1.0.0-SNAPSHOT.jar` |
-| Test reports | `target/surefire-reports/` |
-| Coverage report | `target/site/jacoco/index.html` |
-
-The shade plugin also leaves `target/original-message-relay-1.0.0-SNAPSHOT.jar`. Use the executable JAR above, which includes Jackson.
-
-## Run
-
-Start the server in one terminal:
+Run it with:
 
 ```sh
 java -jar target/message-relay-1.0.0-SNAPSHOT.jar
 ```
 
-Expected startup output: `Message relay listening on port 9000`.
+Expected output:
 
-In separate terminals, run the sample clients:
+```text
+Message relay listening on port 9000
+```
+
+The server accepts an optional port argument. The client accepts optional host and port arguments after the identity:
 
 ```sh
-java -cp target/message-relay-1.0.0-SNAPSHOT.jar com.messagerelay.client.RelayClient alice
+java -jar target/message-relay-1.0.0-SNAPSHOT.jar 9100
+java -cp target/message-relay-1.0.0-SNAPSHOT.jar com.messagerelay.client.RelayClient bob localhost 9100
+```
+
+The defaults remain server port `9000` and client destination `localhost:9000`. Server port `0` requests an available port from the operating system; the startup message prints the actual bound port.
+
+## Entry-point test coverage
+
+Automated tests now launch the actual command-line client and server entry point in separate JVMs. They verify registration, SEND frames and results, displayed deliveries, explicit ACKs, help and invalid commands, console EOF/quit, server EOF/malformed frames, and the JVM shutdown hook with an active client.
+
+These tests use temporary ports and bounded waits. Child JVMs inherit the JaCoCo agent when Maven enables it, so their execution contributes to `target/site/jacoco/index.html` and the XML report consumed by SonarQube. No coverage exclusions are added. The tests run as part of the existing `clean verify` command.
+
+---
+
+# Interactive CLI Demo
+
+The project includes an interactive TCP client.
+
+A full demonstration uses three terminals.
+
+## Terminal 1 — Server
+
+```sh
+java -jar target/message-relay-1.0.0-SNAPSHOT.jar
+```
+
+## Terminal 2 — Bob
+
+```sh
 java -cp target/message-relay-1.0.0-SNAPSHOT.jar com.messagerelay.client.RelayClient bob
 ```
 
-Each sample client connects to `localhost:9000`, registers its identity, prints one response, waits 60 seconds, then closes. The default identity is `alice` if no argument is supplied. **The sample client is only a registration smoke test:** it has no send command, continuous receive loop, ACK command, or automatic reconnect. The socket integration tests exercise those server behaviours using protocol clients in the tests.
-
-For the existing automated messaging demonstration:
-
-```powershell
-.\mvnw.cmd --batch-mode --no-transfer-progress "-Dtest=ClientSessionIntegrationTest" test
-```
-
-Use `./mvnw` instead on Linux/macOS. This covers send/ACK, offline delivery, unacknowledged redelivery, and validation. The protocol uses a binary length prefix, so typing JSON into a plain text TCP client is insufficient; see [the protocol specification](APPROACH.md#protocol-and-connection-lifecycle).
-
-## Configuration and lifecycle
-
-There are currently no configuration files, environment overrides, or server command-line options.
-
-| Setting | Current behaviour/control |
-| --- | --- |
-| Server address | All local interfaces; `new ServerSocket(port)` |
-| Server port | `9000`, hard-coded in `Main`; embedding code can call `new RelayServer(port)` |
-| Sample client destination | `localhost:9000`, hard-coded in `RelayClient` |
-| Frame payload | Maximum 65,536 UTF-8 bytes, excluding the four-byte prefix |
-| Pending mailbox | 100 messages per registered identity, including delivered but unacknowledged messages |
-| Active sessions | 100 admitted connections, including connections that have not registered |
-| Outbound queue | 128 events per session; overflow closes that socket |
-| Registration/read/write/ACK deadlines | None in the running application |
-| Programmatic shutdown | `RelayServer.stop()` closes the listener and active sockets; the server loop then waits up to two seconds for its session executor before requesting interruption |
-| Terminal shutdown | Ctrl+C terminates the process; `Main` has no shutdown hook calling `stop()` |
-
-Limits are source constants in `FrameCodec`, `Mailbox`, `RelayServer`, and `ClientSession`. Changing them currently requires rebuilding. The two-second executor wait is not an end-to-end shutdown deadline, and writer threads are interrupted rather than explicitly joined.
-
-Before accepting a registered `SEND`, the server checks the complete encoded `DELIVERY` against the same 65,536-byte limit used by the frame writer. This includes the sender ID, UTF-8 encoding, and JSON escaping. Oversized deliveries return `SEND_RESULT` with `accepted:false` and reason `Delivery frame exceeds maximum size`, without storing a message or reserving its ID. A delivery exactly at the limit is accepted if the recipient and mailbox checks also pass.
-
-All identities, queued messages, and pending message IDs are lost when the process exits. There is no recovery across server restarts. An occupied port produces `BindException`; free port 9000 before launching, or change the source and rebuild both entry points as needed.
-
-## Current limitations
-
-- The number of retained identities and aggregate mailbox memory are not capped. Per-mailbox and connection limits do not provide a whole-server memory bound.
-- Idle or partial-frame connections have no deadline and can occupy all connection slots. Slow-reader isolation uses per-session writers and bounded queues, but has no write deadline.
-- Identity and message-ID lengths have no independent caps. Boundary validation for other server response shapes remains to be completed.
-- Strict FIFO is not guaranteed under concurrent sends/reconnects. Redelivery happens on registration, with no timed retry on an existing connection.
-- Message IDs are globally unique only while pending. Reuse after ACK is permitted; a stale ACK can then remove a newer message with the same ID for that recipient.
-- The executable lacks a shutdown hook, and the sample client does not demonstrate the complete exchange interactively.
-- Docker packaging needs correction and verification. Durable storage and restart recovery are not implemented on `main`; the repository interface is unused.
-
-The [development roadmap](APPROACH.md#remaining-work-in-priority-order) prioritises resource bounds, lifecycle handling, and a complete terminal client before optional persistence and infrastructure.
-
-## CI and Docker status
-
-`.github/workflows/ci.yaml` defines Java 25 build, unit-test, integration-test, SonarQube, and packaging jobs for pushes/PRs to `main`. The packaging job uploads the executable JAR as the `message-relay` artifact after build and tests pass. It does not depend on SonarQube analysis. SonarQube uses repository configuration and `SONAR_TOKEN`; local build/test commands do not require those settings. Deployment and image publishing are not configured. Hosted CI status has not been verified as part of the local validation below.
-
-A two-stage Dockerfile exists, but its final `COPY --from=build /app/target/*.jar app.jar` matches both the shaded and original JARs. It needs an explicit executable-JAR path before being treated as a working bonus. It also skips tests and uses mutable image tags. Docker build/run has not been verified for this submission.
-
-After correcting that copy and passing `clean verify`, the intended commands are:
+## Terminal 3 — Alice
 
 ```sh
-docker build -f docker/Dockerfile -t message-relay:local .
+java -cp target/message-relay-1.0.0-SNAPSHOT.jar com.messagerelay.client.RelayClient alice
+```
+
+The CLI commands are:
+
+```text
+send <recipientId> <messageId> <body>
+ack <messageId>
+help
+quit
+```
+
+---
+
+# Demo 1 — Send and ACK
+
+From Alice:
+
+```text
+send bob msg-1 hello bob
+```
+
+Alice receives:
+
+```json
+{"type":"SEND_RESULT","messageId":"msg-1","accepted":true,"reason":null}
+```
+
+Bob receives:
+
+```json
+{"type":"DELIVERY","messageId":"msg-1","senderId":"alice","body":"hello bob"}
+```
+
+Bob acknowledges it:
+
+```text
+ack msg-1
+```
+
+The message is then removed from Bob's pending mailbox.
+
+---
+
+# Demo 2 — Offline Delivery
+
+Start Alice and Bob, then disconnect Bob:
+
+```text
+quit
+```
+
+Alice sends while Bob is offline:
+
+```text
+send bob msg-2 sent while you were offline
+```
+
+Alice receives:
+
+```json
+{"type":"SEND_RESULT","messageId":"msg-2","accepted":true,"reason":null}
+```
+
+Reconnect Bob with the same identity:
+
+```sh
+java -cp target/message-relay-1.0.0-SNAPSHOT.jar com.messagerelay.client.RelayClient bob
+```
+
+Bob immediately receives:
+
+```json
+{"type":"DELIVERY","messageId":"msg-2","senderId":"alice","body":"sent while you were offline"}
+```
+
+Bob can then ACK it:
+
+```text
+ack msg-2
+```
+
+This demonstrates that the logical client and mailbox survive a TCP disconnect.
+
+---
+
+# Demo 3 — Delivered but Unacknowledged Redelivery
+
+1. Alice sends a message to Bob.
+2. Bob receives the `DELIVERY`.
+3. Bob disconnects without sending an ACK.
+4. Bob reconnects using the same identity.
+5. The message is delivered again.
+6. Bob sends the ACK.
+
+This demonstrates the relay's at-least-once delivery semantics.
+
+---
+
+# Duplicate Message IDs
+
+Message IDs are globally unique while pending.
+
+For example:
+
+```text
+send bob msg-10 first message
+send bob msg-10 second message
+```
+
+The second SEND is rejected while the first `msg-10` remains pending.
+
+Example response:
+
+```json
+{
+  "type": "SEND_RESULT",
+  "messageId": "msg-10",
+  "accepted": false,
+  "reason": "Duplicate message ID"
+}
+```
+
+After the correct recipient ACKs the original message, the ID reservation is released.
+
+Clients should use globally unique IDs in real usage.
+
+---
+
+# Docker
+
+A reproducible Docker image is provided as an optional exercise bonus.
+
+## Docker Compose
+
+From the repository root:
+
+```sh
+docker compose up --build
+```
+
+Expected output includes:
+
+```text
+Message relay listening on port 9000
+```
+
+The relay is available at:
+
+```text
+localhost:9000
+```
+
+Stop the service with `Ctrl+C`.
+
+The JVM shutdown hook invokes the controlled server shutdown path before the container exits.
+
+Clean up Compose resources with:
+
+```sh
+docker compose down
+```
+
+---
+
+## Docker Build Directly
+
+Build:
+
+```sh
+docker build -t message-relay:local .
+```
+
+Run:
+
+```sh
 docker run --rm --name message-relay -p 127.0.0.1:9000:9000 message-relay:local
 ```
 
-## Verification record
+---
 
-Local validation of the delivery-size fix:
+# Tests
 
-- Windows, JDK 25, Maven 3.9.16: `.\mvnw.cmd --batch-mode --no-transfer-progress clean verify` passed, producing the executable JAR and coverage report: **29 tests, zero failures/errors/skips**.
-- The three new regression cases failed before the fix and passed afterwards. They cover ASCII, multibyte UTF-8, and JSON escaping, including rejection without mailbox/ID retention and delivery/ACK at the exact frame limit.
-- An earlier packaged-server launch reached socket binding but failed because local port 9000 was occupied. A successful packaged server/client smoke run remains to be repeated with that port free. Automated socket tests passed on temporary ports.
+Run the complete test suite:
+
+## Windows
+
+```powershell
+.\mvnw.cmd --batch-mode --no-transfer-progress test
+```
+
+## Linux / macOS
+
+```sh
+./mvnw --batch-mode --no-transfer-progress test
+```
+
+Run only unit tests:
+
+```powershell
+.\mvnw.cmd "-Dtest=com/messagerelay/unit/**/*Test.java" test
+```
+
+Run only integration tests:
+
+```powershell
+.\mvnw.cmd "-Dtest=com/messagerelay/integration/**/*Test.java" test
+```
+
+The test suite is intentionally focused on important behaviour and boundaries rather than exhaustive implementation coverage.
+
+Covered areas include:
+
+- frame encoding and decoding,
+- UTF-8 framing,
+- invalid frame sizes,
+- truncated frames,
+- protocol decoding,
+- registration,
+- SEND acceptance and rejection,
+- duplicate pending message IDs,
+- mailbox capacity,
+- explicit acknowledgements,
+- wrong-recipient ACKs,
+- repeated ACKs,
+- offline delivery,
+- reconnect,
+- delivered-but-unacknowledged redelivery,
+- malformed JSON recovery,
+- semantic field validation,
+- active connection limits,
+- shutdown with connected clients,
+- DELIVERY frame-size boundaries,
+- multibyte UTF-8,
+- JSON escaping.
+
+Integration tests use real local TCP sockets.
+
+---
+
+# Protocol Summary
+
+The relay uses a persistent bidirectional TCP connection.
+
+Each message is encoded as:
+
+```text
+4-byte big-endian payload length
++
+UTF-8 JSON payload
+```
+
+Example:
+
+```json
+{
+  "type": "SEND",
+  "messageId": "msg-1",
+  "recipientId": "bob",
+  "body": "hello"
+}
+```
+
+The complete protocol and connection lifecycle are documented in [`APPROACH.md`](APPROACH.md).
+
+---
+
+# Resource Limits
+
+| Resource | Limit |
+| --- | ---: |
+| TCP frame payload | 65,536 UTF-8 bytes |
+| Pending messages per mailbox | 100 |
+| Active TCP connections | 100 |
+| Outbound events per client | 128 |
+| Executor shutdown wait | 2 seconds |
+
+A SEND is also checked against the size of the final encoded `DELIVERY` before being accepted.
+
+This prevents a SEND that fits the frame limit from producing an undeliverable DELIVERY after fields such as `senderId` or JSON escaping are added.
+
+---
+
+# Invalid Input and Resource Limits
+
+| Condition | Behaviour |
+| --- | --- |
+| Missing required field | `ERROR / INVALID_MESSAGE` |
+| Malformed JSON | `ERROR / MALFORMED_MESSAGE` |
+| Invalid/unsupported type | `ERROR / INVALID_MESSAGE_TYPE` |
+| Identity already connected | `ERROR / IDENTITY_IN_USE` |
+| Register twice on one connection | `ERROR / ALREADY_REGISTERED` |
+| SEND before registration | Rejected `SEND_RESULT` |
+| Unknown recipient | Rejected `SEND_RESULT` |
+| Duplicate pending ID | Rejected `SEND_RESULT` |
+| Mailbox full | Rejected `SEND_RESULT` |
+| DELIVERY exceeds frame limit | Rejected `SEND_RESULT` |
+| Connection limit reached | Best-effort error, then connection close |
+| Outbound queue full | Affected connection closes |
+| Invalid TCP framing | Affected connection closes |
+
+Malformed clients are isolated to their own connection and do not stop unrelated clients or the relay server.
+
+---
+
+# Configuration and Lifecycle
+
+| Setting | Behaviour |
+| --- | --- |
+| Server port | `9000` |
+| CLI destination | `localhost:9000` |
+| Runtime read timeout | None |
+| Runtime write timeout | None |
+| ACK timeout | None |
+| Mailbox persistence | In memory |
+| Controlled shutdown | JVM shutdown hook → `RelayServer.stop()` |
+
+The server shutdown sequence is:
+
+```text
+Ctrl+C / Docker SIGTERM
+        |
+        v
+JVM shutdown hook
+        |
+        v
+RelayServer.stop()
+        |
+        +-- close listener
+        +-- close active sockets
+        +-- stop accepting connections
+        +-- allow session tasks to finish
+        +-- interrupt remaining tasks after shutdown wait
+```
+
+---
+
+# Dependencies
+
+Runtime:
+
+- Java 25
+- Jackson Databind 2.19.2
+
+Testing/build:
+
+- JUnit Jupiter 5.13.4
+- JaCoCo
+- Maven Surefire
+- Maven JAR Plugin
+- Maven Shade Plugin
+
+No Kafka, RabbitMQ, Redis, ActiveMQ, Pulsar, NATS, database, or cloud messaging service is required.
+
+---
+
+# CI
+
+GitHub Actions contains separate jobs for:
+
+- Build
+- Unit Tests
+- Integration Tests
+- SonarQube Analysis
+- Package
+
+The packaging job produces and uploads the executable shaded JAR.
+
+---
+
+# Known Limitations
+
+The final implementation deliberately remains small and explainable.
+
+Known limitations:
+
+- state is in memory and is lost when the relay process restarts,
+- durable storage/restart recovery is not implemented,
+- strict FIFO under concurrent sends is not guaranteed,
+- retained logical identities do not currently have a global expiry/cap,
+- runtime socket read/write/partial-frame deadlines are not implemented,
+- sufficiently many idle clients could occupy all available connection slots,
+- message IDs can be reused after ACK,
+- a very delayed stale ACK combined with ID reuse is therefore ambiguous,
+- there is no authentication or TLS,
+- there is no automatic client reconnect/backoff,
+- unacknowledged messages are replayed on reconnect rather than periodically retried,
+- the design targets a single relay process rather than distributed replicas.
+
+Persistence and strict FIFO were optional bonus requirements and were intentionally left outside the final solution.
+
+---
+
+# Final Verification
+
+Before sharing the repository:
+
+```powershell
+.\mvnw.cmd --batch-mode --no-transfer-progress clean verify
+```
+
+Verify the packaged artifact:
+
+```powershell
+java -jar target/message-relay-1.0.0-SNAPSHOT.jar
+```
+
+Verify Docker:
+
+```powershell
+docker compose up --build
+```
+
+Then manually demonstrate:
+
+```text
+REGISTER
+SEND
+SEND_RESULT
+DELIVERY
+ACK
+disconnect
+offline SEND
+reconnect
+redelivery
+ACK
+```
+
+The public repository should contain no secrets, credentials, proprietary source code, or sensitive data.

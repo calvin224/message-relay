@@ -68,7 +68,7 @@ public class RelayServer {
 
         System.out.println(
                 "Message relay listening on port "
-                        + port
+                        + serverSocket.getLocalPort()
         );
 
         try {
