@@ -8,6 +8,9 @@ public class Main {
 
     private static final int PORT = 9000;
 
+    private static final System.Logger LOGGER =
+            System.getLogger(Main.class.getName());
+
     public static void main(String[] args) throws Exception {
 
         RelayServer server =
@@ -41,9 +44,10 @@ public class Main {
 
         } catch (IOException e) {
 
-            System.err.println(
-                    "Error while shutting down relay: "
-                            + e.getMessage()
+            LOGGER.log(
+                    System.Logger.Level.ERROR,
+                    "Error while shutting down relay",
+                    e
             );
         }
     }

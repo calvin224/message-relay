@@ -7,11 +7,10 @@ import com.messagerelay.protocol.commands.RegisterCommand;
 import com.messagerelay.protocol.commands.SendCommand;
 import com.messagerelay.protocol.types.MessageType;
 
-import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
-import java.io.InputStreamReader;
+import java.io.IOException;
 import java.net.Socket;
 
 public class RelayClient {
@@ -22,12 +21,16 @@ public class RelayClient {
     private static final int PORT =
             9000;
 
+    private static final System.Logger LOGGER =
+            System.getLogger(RelayClient.class.getName());
+
     public static void main(String[] args)
             throws Exception {
 
         if (args.length == 0) {
 
-            System.out.println(
+            LOGGER.log(
+                    System.Logger.Level.INFO,
                     "Usage: RelayClient <clientId> [host] [port]"
             );
 
@@ -58,13 +61,6 @@ public class RelayClient {
                 DataOutputStream output =
                         new DataOutputStream(
                                 socket.getOutputStream()
-                        );
-
-                BufferedReader console =
-                        new BufferedReader(
-                                new InputStreamReader(
-                                        System.in
-                                )
                         )
         ) {
 
@@ -84,77 +80,56 @@ public class RelayClient {
                                     )
                             );
 
-            printHelp();
-
-            while (!socket.isClosed()) {
-
-                System.out.print("> ");
-
-                String line =
-                        console.readLine();
-
-                if (line == null) {
-                    break;
-                }
-
-                line =
-                        line.trim();
-
-                if (line.isEmpty()) {
-                    continue;
-                }
-
-                if (line.equalsIgnoreCase(
-                        "quit"
-                )) {
-                    break;
-                }
-
-                if (line.equalsIgnoreCase(
-                        "help"
-                )) {
-
-                    printHelp();
-                    continue;
-                }
-
-                if (line.equals("send") || line.startsWith(
-                        "send "
-                )) {
-
-                    handleSend(
-                            line,
-                            output,
-                            frameCodec,
-                            protocolCodec
-                    );
-
-                    continue;
-                }
-
-                if (line.equals("ack") || line.startsWith(
-                        "ack "
-                )) {
-
-                    handleAck(
-                            line,
-                            output,
-                            frameCodec,
-                            protocolCodec
-                    );
-
-                    continue;
-                }
-
-                System.out.println(
-                        "Unknown command. Type 'help'."
-                );
+            try {
+                runConsole(socket, output, frameCodec, protocolCodec);
+            } finally {
+                readerThread.interrupt();
             }
-
-            socket.close();
-
-            readerThread.interrupt();
         }
+    }
+
+    private static void runConsole(
+            Socket socket,
+            DataOutputStream output,
+            FrameCodec frameCodec,
+            ProtocolCodec protocolCodec
+    ) throws IOException {
+        printHelp();
+
+        while (!socket.isClosed()) {
+            String line = IO.readln("> ");
+
+            if (line == null || !handleCommand(line.trim(), output, frameCodec, protocolCodec)) {
+                break;
+            }
+        }
+    }
+
+    private static boolean handleCommand(
+            String line,
+            DataOutputStream output,
+            FrameCodec frameCodec,
+            ProtocolCodec protocolCodec
+    ) throws IOException {
+        if (line.isEmpty()) {
+            return true;
+        }
+
+        if (line.equalsIgnoreCase("quit")) {
+            return false;
+        }
+
+        if (line.equalsIgnoreCase("help")) {
+            printHelp();
+        } else if (line.equals("send") || line.startsWith("send ")) {
+            handleSend(line, output, frameCodec, protocolCodec);
+        } else if (line.equals("ack") || line.startsWith("ack ")) {
+            handleAck(line, output, frameCodec, protocolCodec);
+        } else {
+            LOGGER.log(System.Logger.Level.INFO, "Unknown command. Type 'help'.");
+        }
+
+        return true;
     }
 
     private static void register(
@@ -162,7 +137,7 @@ public class RelayClient {
             DataOutputStream output,
             FrameCodec frameCodec,
             ProtocolCodec protocolCodec
-    ) throws Exception {
+    ) throws IOException {
 
         RegisterCommand command =
                 new RegisterCommand(
@@ -177,7 +152,8 @@ public class RelayClient {
                 protocolCodec
         );
 
-        System.out.println(
+        LOGGER.log(
+                System.Logger.Level.INFO,
                 "Connecting as: "
                         + clientId
         );
@@ -188,7 +164,7 @@ public class RelayClient {
             DataOutputStream output,
             FrameCodec frameCodec,
             ProtocolCodec protocolCodec
-    ) throws Exception {
+    ) throws IOException {
 
         String[] parts =
                 line.split(
@@ -198,7 +174,8 @@ public class RelayClient {
 
         if (parts.length < 4) {
 
-            System.out.println(
+            LOGGER.log(
+                    System.Logger.Level.INFO,
                     "Usage: send <recipientId> <messageId> <body>"
             );
 
@@ -235,7 +212,7 @@ public class RelayClient {
             DataOutputStream output,
             FrameCodec frameCodec,
             ProtocolCodec protocolCodec
-    ) throws Exception {
+    ) throws IOException {
 
         String[] parts =
                 line.split(
@@ -245,7 +222,8 @@ public class RelayClient {
 
         if (parts.length < 2) {
 
-            System.out.println(
+            LOGGER.log(
+                    System.Logger.Level.INFO,
                     "Usage: ack <messageId>"
             );
 
@@ -265,7 +243,8 @@ public class RelayClient {
                 protocolCodec
         );
 
-        System.out.println(
+        LOGGER.log(
+                System.Logger.Level.INFO,
                 "ACK sent for: "
                         + parts[1]
         );
@@ -276,7 +255,7 @@ public class RelayClient {
             DataOutputStream output,
             FrameCodec frameCodec,
             ProtocolCodec protocolCodec
-    ) throws Exception {
+    ) throws IOException {
 
         String json =
                 protocolCodec.encode(
@@ -304,31 +283,26 @@ public class RelayClient {
                                 input
                         );
 
-                System.out.println();
-
-                System.out.println(
+                LOGGER.log(
+                        System.Logger.Level.INFO,
                         "< " + message
                 );
-
-                System.out.print("> ");
             }
 
-        } catch (EOFException e) {
+        } catch (EOFException _) {
 
-            System.out.println();
-
-            System.out.println(
+            LOGGER.log(
+                    System.Logger.Level.INFO,
                     "Server closed the connection."
             );
 
-        } catch (Exception e) {
+        } catch (IOException e) {
 
             if (!Thread.currentThread()
                     .isInterrupted()) {
 
-                System.out.println();
-
-                System.out.println(
+                LOGGER.log(
+                        System.Logger.Level.WARNING,
                         "Connection closed: "
                                 + e.getMessage()
                 );
@@ -338,28 +312,30 @@ public class RelayClient {
 
     private static void printHelp() {
 
-        System.out.println();
-
-        System.out.println(
+        LOGGER.log(
+                System.Logger.Level.INFO,
                 "Commands:"
         );
 
-        System.out.println(
+        LOGGER.log(
+                System.Logger.Level.INFO,
                 "  send <recipientId> <messageId> <body>"
         );
 
-        System.out.println(
+        LOGGER.log(
+                System.Logger.Level.INFO,
                 "  ack <messageId>"
         );
 
-        System.out.println(
+        LOGGER.log(
+                System.Logger.Level.INFO,
                 "  help"
         );
 
-        System.out.println(
+        LOGGER.log(
+                System.Logger.Level.INFO,
                 "  quit"
         );
 
-        System.out.println();
     }
 }

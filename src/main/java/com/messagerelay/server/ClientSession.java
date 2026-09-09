@@ -28,6 +28,9 @@ public class ClientSession implements Runnable {
 
     private static final int MAX_OUTBOUND_MESSAGES = 128;
 
+    private static final System.Logger LOGGER =
+            System.getLogger(ClientSession.class.getName());
+
     private final Socket socket;
     private final ClientRegistry clientRegistry;
     private final RelayService relayService;
@@ -85,18 +88,20 @@ public class ClientSession implements Runnable {
                 handleFrame(json);
             }
 
-        } catch (EOFException e) {
+        } catch (EOFException _) {
 
-            System.out.println(
-                    "Client disconnected: "
-                            + registeredClientId
+            LOGGER.log(
+                    System.Logger.Level.INFO,
+                    "Client disconnected: {0}",
+                    registeredClientId
             );
 
         } catch (IOException e) {
 
-            System.out.println(
-                    "Client connection error: "
-                            + e.getMessage()
+            LOGGER.log(
+                    System.Logger.Level.WARNING,
+                    "Client connection error: {0}",
+                    e.getMessage()
             );
 
         } finally {
@@ -126,7 +131,7 @@ public class ClientSession implements Runnable {
                             json
                     );
 
-        } catch (JsonProcessingException e) {
+        } catch (JsonProcessingException _) {
 
             sendError(
                     ErrorCode.MALFORMED_MESSAGE,
@@ -183,7 +188,7 @@ public class ClientSession implements Runnable {
                 );
             }
 
-        } catch (JsonProcessingException e) {
+        } catch (JsonProcessingException _) {
 
             sendError(
                     ErrorCode.MALFORMED_MESSAGE,
@@ -243,11 +248,11 @@ public class ClientSession implements Runnable {
                 );
             }
 
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
 
             Thread.currentThread().interrupt();
 
-        } catch (IOException e) {
+        } catch (IOException _) {
 
             closeSocket();
         }
@@ -296,9 +301,10 @@ public class ClientSession implements Runnable {
         registeredClientId =
                 command.clientId();
 
-        System.out.println(
-                "Registered client: "
-                        + registeredClientId
+        LOGGER.log(
+                System.Logger.Level.INFO,
+                "Registered client: {0}",
+                registeredClientId
         );
 
         RegisteredEvent response =
@@ -374,7 +380,7 @@ public class ClientSession implements Runnable {
 
         try {
             frameCodec.validateFrame(deliveryJson);
-        } catch (IOException e) {
+        } catch (IOException _) {
             enqueueOutbound(new SendResultEvent(
                     MessageType.SEND_RESULT,
                     command.messageId(),
@@ -526,7 +532,7 @@ public class ClientSession implements Runnable {
         try {
             socket.close();
 
-        } catch (IOException ignored) {
+        } catch (IOException _) {
             // Socket is already being closed.
         }
     }

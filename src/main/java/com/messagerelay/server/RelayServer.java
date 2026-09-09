@@ -12,13 +12,19 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public class RelayServer {
+
+    private static final System.Logger LOGGER =
+            System.getLogger(RelayServer.class.getName());
 
     private static final int MAX_ACTIVE_CONNECTIONS =
             100;
@@ -53,6 +59,9 @@ public class RelayServer {
 
     private volatile boolean running;
 
+    private final CompletableFuture<Integer> listeningPort =
+            new CompletableFuture<>();
+
     private ServerSocket serverSocket;
 
     public RelayServer(int port) {
@@ -61,14 +70,20 @@ public class RelayServer {
 
     public void start() throws IOException {
 
-        serverSocket =
-                new ServerSocket(port);
+        try {
+            serverSocket = new ServerSocket(port);
+        } catch (IOException failure) {
+            listeningPort.completeExceptionally(failure);
+            throw failure;
+        }
 
         running = true;
+        listeningPort.complete(serverSocket.getLocalPort());
 
-        System.out.println(
-                "Message relay listening on port "
-                        + serverSocket.getLocalPort()
+        LOGGER.log(
+                System.Logger.Level.INFO,
+                "Message relay listening on port {0}",
+                Integer.toString(serverSocket.getLocalPort())
         );
 
         try {
@@ -89,10 +104,10 @@ public class RelayServer {
 
                     activeSockets.add(socket);
 
-                    System.out.println(
-                            "Client connected: "
-                                    + socket
-                                    .getRemoteSocketAddress()
+                    LOGGER.log(
+                            System.Logger.Level.INFO,
+                            "Client connected: {0}",
+                            socket.getRemoteSocketAddress()
                     );
 
                     executor.submit(
@@ -121,6 +136,13 @@ public class RelayServer {
 
             shutdownExecutor();
         }
+    }
+
+    public int awaitListeningPort(
+            long timeout,
+            TimeUnit unit
+    ) throws InterruptedException, ExecutionException, TimeoutException {
+        return listeningPort.get(timeout, unit);
     }
 
     private void runSession(
@@ -166,7 +188,7 @@ public class RelayServer {
                     protocolCodec.encode(error)
             );
 
-        } catch (IOException e) {
+        } catch (IOException _) {
 
             /*
              * The connection is already being rejected.
@@ -196,7 +218,7 @@ public class RelayServer {
             try {
                 socket.close();
 
-            } catch (IOException ignored) {
+            } catch (IOException _) {
                 // Socket is already being closed.
             }
         }
@@ -216,7 +238,7 @@ public class RelayServer {
                 executor.shutdownNow();
             }
 
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
 
             executor.shutdownNow();
 

@@ -9,6 +9,7 @@ import com.messagerelay.server.RelayServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -18,7 +19,6 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static com.messagerelay.support.TestUtils.findFreePort;
 import static com.messagerelay.support.TestUtils.readEvent;
 import static com.messagerelay.support.TestUtils.startServer;
 import static com.messagerelay.support.TestUtils.writeCommand;
@@ -33,11 +33,8 @@ class RelayServerIntegrationTest {
     void given_active_client_when_server_stops_then_client_is_disconnected_and_server_shuts_down_cleanly()
             throws Exception {
 
-        int port =
-                findFreePort();
-
         RelayServer relayServer =
-                new RelayServer(port);
+                new RelayServer(0);
 
         AtomicReference<Throwable> serverFailure =
                 new AtomicReference<>();
@@ -49,7 +46,7 @@ class RelayServerIntegrationTest {
                 );
 
         try (Socket client =
-                     connectWhenAvailable(port)) {
+                     new Socket("localhost", relayServer.awaitListeningPort(2, TimeUnit.SECONDS))) {
 
             /*
              * Registering proves the connection has
@@ -71,9 +68,10 @@ class RelayServerIntegrationTest {
                     -1,
                     client.getInputStream().read()
             );
+        } finally {
+            relayServer.stop();
+            serverThread.join(2_000);
         }
-
-        serverThread.join(2_000);
 
         assertFalse(
                 serverThread.isAlive()
@@ -89,11 +87,8 @@ class RelayServerIntegrationTest {
     void given_active_connection_limit_reached_when_client_connects_then_connection_is_rejected()
             throws Exception {
 
-        int port =
-                findFreePort();
-
         RelayServer relayServer =
-                new RelayServer(port);
+                new RelayServer(0);
 
         AtomicReference<Throwable> serverFailure =
                 new AtomicReference<>();
@@ -104,23 +99,12 @@ class RelayServerIntegrationTest {
                         serverFailure
                 );
 
-        List<Socket> clients =
-                new ArrayList<>();
+        try (ClientConnections clients = new ClientConnections()) {
 
-        try {
+            int port = relayServer.awaitListeningPort(2, TimeUnit.SECONDS);
 
-            /*
-             * Rather than opening and closing a separate
-             * readiness-probe connection, the first
-             * successful connection becomes client 0.
-             *
-             * This avoids racing with the semaphore
-             * permit being released by a probe session.
-             */
             Socket firstClient =
-                    connectWhenAvailable(port);
-
-            clients.add(firstClient);
+                    clients.add(new Socket("localhost", port));
 
             registerClient(
                     firstClient,
@@ -134,16 +118,14 @@ class RelayServerIntegrationTest {
             for (int i = 1; i < 100; i++) {
 
                 Socket socket =
-                        new Socket(
+                        clients.add(new Socket(
                                 "localhost",
                                 port
-                        );
+                        ));
 
                 socket.setSoTimeout(
                         2_000
                 );
-
-                clients.add(socket);
 
                 registerClient(
                         socket,
@@ -191,16 +173,6 @@ class RelayServerIntegrationTest {
 
         } finally {
 
-            for (Socket client : clients) {
-
-                try {
-                    client.close();
-
-                } catch (IOException ignored) {
-                    // Best-effort test cleanup.
-                }
-            }
-
             relayServer.stop();
 
             serverThread.join(2_000);
@@ -213,6 +185,37 @@ class RelayServerIntegrationTest {
         assertNull(
                 serverFailure.get()
         );
+    }
+
+    private static final class ClientConnections implements Closeable {
+
+        private final List<Socket> clients = new ArrayList<>();
+
+        private Socket add(Socket client) {
+            clients.add(client);
+            return client;
+        }
+
+        @Override
+        public void close() throws IOException {
+            IOException failure = null;
+
+            for (Socket client : clients) {
+                try {
+                    client.close();
+                } catch (IOException exception) {
+                    if (failure == null) {
+                        failure = exception;
+                    } else {
+                        failure.addSuppressed(exception);
+                    }
+                }
+            }
+
+            if (failure != null) {
+                throw failure;
+            }
+        }
     }
 
     private void registerClient(
@@ -262,47 +265,4 @@ class RelayServerIntegrationTest {
         );
     }
 
-    private Socket connectWhenAvailable(
-            int port
-    ) throws Exception {
-
-        long deadline =
-                System.nanoTime()
-                        + TimeUnit.SECONDS
-                        .toNanos(2);
-
-        IOException lastFailure =
-                null;
-
-        while (System.nanoTime()
-                < deadline) {
-
-            try {
-
-                Socket socket =
-                        new Socket(
-                                "localhost",
-                                port
-                        );
-
-                socket.setSoTimeout(
-                        2_000
-                );
-
-                return socket;
-
-            } catch (IOException exception) {
-
-                lastFailure =
-                        exception;
-
-                Thread.sleep(20);
-            }
-        }
-
-        throw new IllegalStateException(
-                "Relay server did not start in time",
-                lastFailure
-        );
-    }
 }

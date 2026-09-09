@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public final class TestUtils {
@@ -81,9 +82,9 @@ public final class TestUtils {
         );
     }
 
-    public static <Event> Event readEvent(
+    public static <T> T readEvent(
             DataInputStream input,
-            Class<Event> eventType
+            Class<T> eventType
     ) throws IOException {
 
         return OBJECT_MAPPER.readValue(
@@ -230,25 +231,12 @@ public final class TestUtils {
     private static void awaitCondition(
             BooleanSupplier condition,
             String failureMessage
-    ) throws InterruptedException {
+    ) {
 
-        long deadline =
-                System.nanoTime()
-                        + TimeUnit.SECONDS
-                        .toNanos(2);
-
-        while (System.nanoTime()
-                < deadline) {
-
-            if (condition.getAsBoolean()) {
-                return;
-            }
-
-            Thread.sleep(10);
-        }
-
-        throw new AssertionError(
-                failureMessage
-        );
+        await().alias(failureMessage)
+                .pollDelay(0, TimeUnit.MILLISECONDS)
+                .pollInterval(10, TimeUnit.MILLISECONDS)
+                .atMost(2, TimeUnit.SECONDS)
+                .untilAsserted(() -> assertTrue(condition.getAsBoolean(), failureMessage));
     }
 }
