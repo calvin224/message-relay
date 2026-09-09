@@ -5,29 +5,42 @@ import java.util.concurrent.ConcurrentMap;
 
 public class ClientRegistry {
 
+    private static final int MAX_IDENTITIES = 100;
+
+    public enum RegistrationResult {
+        REGISTERED,
+        IDENTITY_IN_USE,
+        IDENTITY_LIMIT_REACHED
+    }
+
     private final ConcurrentMap<String, ClientContext> clients =
             new ConcurrentHashMap<>();
 
-    public boolean register(
+    public synchronized RegistrationResult register(
             String clientId,
             ClientSession session
     ) {
-        ClientContext context =
-                clients.computeIfAbsent(
-                        clientId,
-                        ClientContext::new
-                );
+        ClientContext context = clients.get(clientId);
+
+        if (context == null) {
+            if (clients.size() >= MAX_IDENTITIES) {
+                return RegistrationResult.IDENTITY_LIMIT_REACHED;
+            }
+
+            context = new ClientContext(clientId);
+            clients.put(clientId, context);
+        }
 
         context.getLock().lock();
 
         try {
             if (context.getActiveSession() != null) {
-                return false;
+                return RegistrationResult.IDENTITY_IN_USE;
             }
 
             context.setActiveSession(session);
 
-            return true;
+            return RegistrationResult.REGISTERED;
 
         } finally {
             context.getLock().unlock();

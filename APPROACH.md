@@ -22,6 +22,8 @@ No message broker, database, messaging framework, or cloud messaging service own
 
 The required core scenarios were prioritised first. Docker was implemented as an optional bonus.
 
+[`DESIGN.md`](DESIGN.md) provides the class diagrams, command-routing map, delivery sequence, and test-class index. This document explains the decisions and protocol contract; [`README.md`](README.md) contains the runnable commands.
+
 Strict FIFO and durable persistence were intentionally not included in the final implementation because both were optional bonuses and would add significantly more sequencing, recovery, and failure-state complexity.
 
 ---
@@ -50,6 +52,7 @@ Strict FIFO and durable persistence were intentionally not included in the final
 | Correct-recipient ACK only | ACKs operate against the mailbox of the identity registered on that TCP connection. |
 | At-least-once delivery | Messages remain pending until ACK and may therefore be delivered more than once. |
 | Bounded mailbox | 100 pending messages per logical identity. |
+| Bounded identity registry | 100 retained identities, including offline clients; existing identities may reconnect at capacity. |
 | Bounded message size | 65,536-byte UTF-8 frame payload limit. |
 | Bounded connections | Maximum 100 active connections. |
 | Bounded buffers | Maximum 128 outbound events per client session. |
@@ -61,7 +64,7 @@ Strict FIFO and durable persistence were intentionally not included in the final
 | Ordering | Sequential mailbox insertion order is preserved; strict concurrent FIFO is not guaranteed. |
 | Slow clients | Dedicated writer + bounded outbound queue isolates normal slow writes from unrelated clients. |
 | Malformed clients | Errors are handled per connection. |
-| Concurrent operations | Concurrent collections and recipient-scoped locks protect shared state. |
+| Concurrent operations | Concurrent collections, a short registration monitor, and recipient-scoped locks protect shared state. |
 | Predictable shutdown | Active sockets and listener are closed; executor shutdown is bounded; JVM shutdown hook invokes `stop()`. |
 
 ---
@@ -135,6 +138,7 @@ That allows disconnect/reconnect semantics without trying to preserve a dead soc
 | `RelayServer` | Owns the listening socket, connection permits, active sockets, virtual-thread executor, and shutdown lifecycle. |
 | `ClientSession` | Owns one TCP connection, reads frames, dispatches commands, tracks registration, and queues outbound events. |
 | `ClientRegistry` | Maps logical client IDs to retained `ClientContext` instances. |
+| `ClientRegistry.RegistrationResult` | Distinguishes registration success, an active identity conflict, and identity capacity rejection. |
 | `ClientContext` | Holds identity, active session, mailbox, and recipient-scoped lock. |
 | `Mailbox` | Stores bounded pending messages in insertion order. |
 | `RelayService` | Owns SEND acceptance, duplicate-ID handling, mailbox storage, and ACK removal. |
@@ -255,6 +259,10 @@ Response:
 ```
 
 Only one active connection may own a given identity.
+
+The registry retains at most 100 identities, online and offline combined. A new identity at capacity receives `ERROR / IDENTITY_LIMIT_REACHED` with message `Server identity limit reached`. The connection remains unregistered and can try an existing offline identity. Existing active identities still receive `IDENTITY_IN_USE`.
+
+Disconnect does not release an identity slot or discard its mailbox. There is no eviction, expiry, or delete command; resetting the process clears everything. This intentionally favours retaining accepted messages over admitting more identities.
 
 ---
 
@@ -600,7 +608,9 @@ The per-client lock protects:
 - mailbox changes,
 - recipient-specific operations.
 
-This avoids one global lock serialising all clients.
+`ClientRegistry.register()` is synchronized so checking the retained-identity count and inserting a new identity are one atomic operation. Existing identities are looked up before the capacity check, so reconnects still work at capacity. Registration then takes that identity's lock to attach the session.
+
+Only registration takes this short registry-wide monitor. SEND, ACK, delivery, and disconnect use recipient-scoped locks, not the registration monitor. The lock order is registry monitor then client lock; no path holding a client lock acquires the registry monitor. No network writes occur during registration.
 
 ---
 
@@ -610,13 +620,18 @@ This avoids one global lock serialising all clients.
 | --- | ---: | --- |
 | Frame payload | 65,536 bytes | Invalid connection frame closes socket; oversized resulting DELIVERY rejects SEND |
 | Pending mailbox | 100 messages | SEND rejected |
-| Active connections | 100 | Best-effort error then excess connection closes |
+| Retained identities | 100 | New identity receives `ERROR / IDENTITY_LIMIT_REACHED`; reconnect remains allowed |
+| Active connections | 100 | Excess connection closes immediately without a protocol response |
 | Outbound queue | 128 events | Affected client socket closes |
 | Shutdown wait | 2 seconds | Remaining executor work is interrupted |
 
 The values are constants to keep the exercise small and reproducible.
 
 A production implementation would likely make them configurable.
+
+The identity and mailbox limits together bound retained mailboxes to 10,000 messages. With a maximum encoded DELIVERY of 65,536 bytes each, that is up to 625 MiB of encoded delivery data, not a JVM heap guarantee: Java objects, strings, identities, outbound queues, and temporary encoding allocations add overhead. There is no separate global byte budget.
+
+Connection-limit rejection closes the socket without writing from the accept thread. A peer that never reads therefore cannot stall admission through a rejection write. The trade-off is that excess clients see EOF/reset rather than a structured reason. This replaces the earlier `CONNECTION_LIMIT_REACHED` event; that error code is no longer emitted or defined. Normal admitted-session errors still use the bounded writer queue.
 
 ---
 
@@ -746,6 +761,10 @@ Covers:
 - wrong-recipient ACK,
 - repeated ACK.
 
+### `ClientRegistryTest`
+
+Covers the 100-identity boundary, rejection without retaining the rejected ID, reconnect with the original mailbox, active identity conflicts, stale-session disconnect safety, and two concurrent registrations competing for the final slot. The concurrency test uses bounded latches and futures rather than sleeps.
+
 ---
 
 ## Integration Tests
@@ -763,6 +782,8 @@ Uses real local sockets to cover:
 - delivered-but-unacknowledged redelivery,
 - malformed JSON,
 - required-field validation.
+
+Also verifies `IDENTITY_LIMIT_REACHED` over TCP, followed by a successful reconnect on the same socket and delivery/ACK of a retained offline message.
 
 ### `DeliveryFrameSizeIntegrationTest`
 
@@ -782,7 +803,11 @@ Covers server-level behaviour including:
 - active clients,
 - controlled shutdown.
 
+At capacity, a second excess connection is checked before reading from the first rejected peer, verifying that rejection does not require that peer to read. This is a focused regression test, not a network-load or slow-client stress test.
+
 Tests use bounded test-side timeouts so failures terminate deterministically.
+
+Awaitility 4.3.0 is test-only and waits for observable mailbox/disconnect conditions with a two-second deadline. It does not implement relay retry or delivery behaviour.
 
 ### `RelayClientIntegrationTest`
 
@@ -895,7 +920,7 @@ The final solution therefore documents the semantics instead of introducing addi
 
 ## Fixed configuration
 
-Resource limits and port values are constants.
+Resource limits are constants. Server port and client host/port can be supplied as command-line arguments; their defaults are constants.
 
 This keeps the exercise easy to reproduce and inspect.
 
@@ -916,7 +941,8 @@ An offline identity can therefore be claimed by another connection that knows it
 - In-memory messages and identities are lost on process restart.
 - Durable persistence/recovery is not implemented.
 - Strict FIFO under concurrent sends is not guaranteed.
-- Retained logical identities have no global expiry or cap.
+- Retained identities are capped at 100 but have no expiry or eviction; abandoned IDs keep their slots until restart.
+- There is no separate global queued-byte/heap budget; fixed count and frame-size bounds can still permit substantial memory use.
 - Production sockets have no read/write/partial-frame deadlines.
 - Idle connections can occupy connection capacity indefinitely.
 - IDs may be reused after ACK, allowing a theoretical stale-ACK ambiguity.
@@ -934,7 +960,7 @@ These limitations are stated explicitly rather than hidden behind stronger deliv
 
 If this were extended beyond the exercise:
 
-1. cap total retained identities and queued bytes,
+1. add a global queued-byte budget if a tighter memory envelope is needed (retained identities are already capped),
 2. introduce configurable resource limits,
 3. add socket registration/read/write deadlines,
 4. add stronger concurrency and stress tests,

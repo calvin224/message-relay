@@ -1,5 +1,6 @@
 package com.messagerelay.integration.server;
 
+import com.messagerelay.domain.RelayMessage;
 import com.messagerelay.protocol.commands.AckCommand;
 import com.messagerelay.protocol.commands.RegisterCommand;
 import com.messagerelay.protocol.commands.SendCommand;
@@ -10,6 +11,7 @@ import com.messagerelay.protocol.events.SendResultEvent;
 import com.messagerelay.protocol.types.ErrorCode;
 import com.messagerelay.protocol.types.MessageType;
 import com.messagerelay.server.ClientRegistry;
+import com.messagerelay.server.ClientSession;
 import com.messagerelay.service.RelayService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -29,9 +31,62 @@ import static com.messagerelay.support.TestUtils.writeCommand;
 import static com.messagerelay.support.TestUtils.writeJson;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ClientSessionIntegrationTest {
+
+    @Test
+    @Timeout(5)
+    void given_full_registry_when_new_identity_is_rejected_then_existing_identity_can_reconnect()
+            throws Exception {
+        ClientRegistry registry = new ClientRegistry();
+        RelayService service = new RelayService(registry);
+
+        for (int index = 0; index < 100; index++) {
+            registerRecipient(registry, service, "client-" + index);
+        }
+
+        ClientSession originalSession = registry.getClient("client-0").getActiveSession();
+        registry.disconnect("client-0", originalSession);
+        assertTrue(service.send(new RelayMessage("msg-1", "client-1", "client-0", "offline")).accepted());
+
+        try (ServerSocket listener = new ServerSocket(0);
+             Socket client = new Socket("localhost", listener.getLocalPort());
+             Socket serverPeer = listener.accept()) {
+            client.setSoTimeout(2_000);
+            Thread sessionThread = startSession(serverPeer, registry, service);
+
+            try {
+                DataInputStream input = new DataInputStream(client.getInputStream());
+                DataOutputStream output = new DataOutputStream(client.getOutputStream());
+
+                writeCommand(output, new RegisterCommand(MessageType.REGISTER, "overflow"));
+                ErrorEvent error = readEvent(input, ErrorEvent.class);
+                assertEquals(MessageType.ERROR, error.type());
+                assertEquals(ErrorCode.IDENTITY_LIMIT_REACHED, error.code());
+                assertNull(registry.getClient("overflow"));
+
+                writeCommand(output, new RegisterCommand(MessageType.REGISTER, "client-1"));
+                assertEquals(ErrorCode.IDENTITY_IN_USE, readEvent(input, ErrorEvent.class).code());
+
+                writeCommand(output, new RegisterCommand(MessageType.REGISTER, "client-0"));
+                assertEquals("client-0", readEvent(input, RegisteredEvent.class).clientId());
+                DeliveryEvent delivery = readEvent(input, DeliveryEvent.class);
+                assertEquals("msg-1", delivery.messageId());
+                assertEquals("offline", delivery.body());
+                assertEquals(1, getMailboxSize(registry, "client-0"));
+
+                writeCommand(output, new AckCommand(MessageType.ACK, "msg-1"));
+                waitForMailboxSize(registry, "client-0", 0);
+                assertEquals(0, getMailboxSize(registry, "client-0"));
+            } finally {
+                sessionThread.interrupt();
+                sessionThread.join(2_000);
+                assertFalse(sessionThread.isAlive());
+            }
+        }
+    }
 
     @Test
     @Timeout(3)
