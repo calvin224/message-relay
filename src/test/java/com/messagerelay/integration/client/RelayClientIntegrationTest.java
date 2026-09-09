@@ -46,6 +46,11 @@ class RelayClientIntegrationTest {
             connection.setSoTimeout(5_000);
             assertEquals(new RegisterCommand(MessageType.REGISTER, "alice"), readEvent(input, RegisterCommand.class));
             writeCommand(output, new RegisteredEvent(MessageType.REGISTERED, "alice"));
+            assertEquals("Commands:", client.awaitOutput("Commands:"));
+            assertEquals("  send <recipientId> <messageId> <body>", client.awaitOutput("  send "));
+            assertEquals("  ack <messageId>", client.awaitOutput("  ack "));
+            assertEquals("  help", client.awaitOutput("  help"));
+            assertEquals("  quit", client.awaitOutput("  quit"));
             client.awaitOutput("\"type\":\"REGISTERED\"");
 
             client.sendLine("  ");

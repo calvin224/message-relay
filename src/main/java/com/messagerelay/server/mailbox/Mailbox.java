@@ -8,7 +8,7 @@ import java.util.List;
 
 public class Mailbox {
 
-    private static final int MAX_MESSAGES = 100;
+    private static final int MAX_MESSAGES = 2;
 
     private final Deque<RelayMessage> messages =
             new ArrayDeque<>();

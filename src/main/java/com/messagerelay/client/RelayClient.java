@@ -76,6 +76,8 @@ public class RelayClient {
                     protocolCodec
             );
 
+            printHelp();
+
             Thread readerThread =
                     Thread.ofVirtual()
                             .start(
@@ -99,8 +101,6 @@ public class RelayClient {
             FrameCodec frameCodec,
             ProtocolCodec protocolCodec
     ) throws IOException {
-        printHelp();
-
         while (!socket.isClosed()) {
             String line = IO.readln("> ");
 
@@ -319,27 +319,14 @@ public class RelayClient {
 
         LOGGER.log(
                 System.Logger.Level.INFO,
-                "Commands:"
-        );
-
-        LOGGER.log(
-                System.Logger.Level.INFO,
-                "  send <recipientId> <messageId> <body>"
-        );
-
-        LOGGER.log(
-                System.Logger.Level.INFO,
-                "  ack <messageId>"
-        );
-
-        LOGGER.log(
-                System.Logger.Level.INFO,
-                "  help"
-        );
-
-        LOGGER.log(
-                System.Logger.Level.INFO,
-                "  quit"
+                String.join(
+                        System.lineSeparator(),
+                        "Commands:",
+                        "  send <recipientId> <messageId> <body>",
+                        "  ack <messageId>",
+                        "  help",
+                        "  quit"
+                )
         );
 
     }
