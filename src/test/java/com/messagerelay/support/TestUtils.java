@@ -231,7 +231,7 @@ public final class TestUtils {
     private static void awaitCondition(
             BooleanSupplier condition,
             String failureMessage
-    ) throws InterruptedException {
+    ) {
 
         await().alias(failureMessage)
                 .pollDelay(0, TimeUnit.MILLISECONDS)
