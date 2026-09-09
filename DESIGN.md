@@ -125,30 +125,30 @@ sequenceDiagram
     participant Alice as Alice / RelayClient
     participant AS as Alice ClientSession
     participant Service as RelayService
-    participant Box as Bob ClientContext / Mailbox
+    participant BobMailbox as Bob ClientContext / Mailbox
     participant BS as Bob ClientSession
     participant Bob as Bob / RelayClient
     Alice->>AS: SEND bob, msg-1, body
     AS->>AS: Validate fields and encoded DELIVERY size
     AS->>Service: send(RelayMessage)
-    Service->>Box: Lock, insert pending message, unlock
+    Service->>BobMailbox: Lock, insert pending message, unlock
     Service-->>AS: SendResult.accepted
     AS-->>Alice: Queue SEND_RESULT accepted
-    alt Bob online
-        AS->>BS: Queue DELIVERY via recipient context
-        BS-->>Bob: DELIVERY msg-1
-        Bob->>BS: Disconnect without ACK
-        BS->>Box: Clear matching active session; keep mailbox
+alt Bob online
+AS->>BS: Queue DELIVERY via recipient context
+BS-->>Bob: DELIVERY msg-1
+Bob->>BS: Disconnect without ACK
+BS->>BobMailbox: Clear matching active session; keep mailbox
     else Bob already offline
-        Note over Box: Message remains queued
-    end
-    Bob->>BS: New connection, REGISTER same ID
-    BS->>Box: Reattach existing context
-    BS-->>Bob: REGISTERED then pending DELIVERY msg-1
-    Bob->>BS: ACK msg-1
-    BS->>Service: acknowledge(bob, msg-1)
-    Service->>Box: Remove pending message under lock
-    Note over Service: Release pending message ID
+Note over BobMailbox: Message remains queued
+end
+Bob->>BS: New connection, REGISTER same ID
+BS->>BobMailbox: Reattach existing context
+BS-->>Bob: REGISTERED then pending DELIVERY msg-1
+Bob->>BS: ACK msg-1
+BS->>Service: acknowledge(bob, msg-1)
+Service->>BobMailbox: Remove pending message under lock
+Note over Service: Release pending message ID
 ```
 
 The Bob session after reconnect is a new object; the context/mailbox is the same. Replay may duplicate a delivery, including when reconnect overlaps an online send. Clients must tolerate duplicates. The sender result is enqueued before delivery is requested, but independent socket writers mean Bob may observe DELIVERY before Alice observes SEND_RESULT.
