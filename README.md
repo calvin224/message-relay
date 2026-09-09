@@ -22,6 +22,8 @@ The relay behaviour is implemented directly in the application. Jackson is used 
 
 See [`APPROACH.md`](APPROACH.md) for the architecture, protocol, concurrency model, delivery semantics, trade-offs, known limitations, and design decisions.
 
+See [`DESIGN.md`](DESIGN.md) for diagrams of every application type, TCP command routes, message delivery, and lifecycle, plus a map of the test classes.
+
 ---
 
 ## Core Requirements
@@ -384,6 +386,7 @@ Covered areas include:
 - malformed JSON recovery,
 - semantic field validation,
 - active connection limits,
+- retained identity limits, concurrent registration, and reconnect at capacity,
 - shutdown with connected clients,
 - DELIVERY frame-size boundaries,
 - multibyte UTF-8,
@@ -426,6 +429,7 @@ The complete protocol and connection lifecycle are documented in [`APPROACH.md`]
 | --- | ---: |
 | TCP frame payload | 65,536 UTF-8 bytes |
 | Pending messages per mailbox | 100 |
+| Retained identities, online and offline combined | 100 |
 | Active TCP connections | 100 |
 | Outbound events per client | 128 |
 | Executor shutdown wait | 2 seconds |
@@ -433,6 +437,8 @@ The complete protocol and connection lifecycle are documented in [`APPROACH.md`]
 A SEND is also checked against the size of the final encoded `DELIVERY` before being accepted.
 
 This prevents a SEND that fits the frame limit from producing an undeliverable DELIVERY after fields such as `senderId` or JSON escaping are added.
+
+At most 10,000 messages can be retained across the 100 mailboxes. These are count and frame-size bounds, not an exact JVM heap budget. Identities are not evicted: once the registry is full, new IDs are rejected, but existing offline IDs can still reconnect without losing their messages. Restarting clears all identities and messages.
 
 ---
 
@@ -444,17 +450,20 @@ This prevents a SEND that fits the frame limit from producing an undeliverable D
 | Malformed JSON | `ERROR / MALFORMED_MESSAGE` |
 | Invalid/unsupported type | `ERROR / INVALID_MESSAGE_TYPE` |
 | Identity already connected | `ERROR / IDENTITY_IN_USE` |
+| New identity when 100 identities are retained | `ERROR / IDENTITY_LIMIT_REACHED`; connection stays open so an existing offline ID can register |
 | Register twice on one connection | `ERROR / ALREADY_REGISTERED` |
 | SEND before registration | Rejected `SEND_RESULT` |
 | Unknown recipient | Rejected `SEND_RESULT` |
 | Duplicate pending ID | Rejected `SEND_RESULT` |
 | Mailbox full | Rejected `SEND_RESULT` |
 | DELIVERY exceeds frame limit | Rejected `SEND_RESULT` |
-| Connection limit reached | Best-effort error, then connection close |
+| Connection limit reached | Immediate connection close, no protocol response (client observes EOF/reset) |
 | Outbound queue full | Affected connection closes |
 | Invalid TCP framing | Affected connection closes |
 
 Malformed clients are isolated to their own connection and do not stop unrelated clients or the relay server.
+
+Connection-limit rejection deliberately does not write an error on the accept thread. This avoids waiting for a rejected peer to read and requires no extra rejection queue or worker pool. A disconnect alone does not tell a client whether capacity or another network failure caused it.
 
 ---
 
@@ -462,8 +471,8 @@ Malformed clients are isolated to their own connection and do not stop unrelated
 
 | Setting | Behaviour |
 | --- | --- |
-| Server port | `9000` |
-| CLI destination | `localhost:9000` |
+| Server port | First server argument; default `9000`, `0` selects an available port |
+| CLI destination | Optional host and port after client ID; default `localhost:9000` |
 | Runtime read timeout | None |
 | Runtime write timeout | None |
 | ACK timeout | None |
@@ -500,6 +509,7 @@ Runtime:
 Testing/build:
 
 - JUnit Jupiter 5.13.4
+- Awaitility 4.3.0 (test-only bounded condition waits)
 - JaCoCo
 - Maven Surefire
 - Maven JAR Plugin
@@ -532,7 +542,7 @@ Known limitations:
 - state is in memory and is lost when the relay process restarts,
 - durable storage/restart recovery is not implemented,
 - strict FIFO under concurrent sends is not guaranteed,
-- retained logical identities do not currently have a global expiry/cap,
+- retained identities are capped at 100 with no expiry or eviction; abandoned IDs consume capacity until restart,
 - runtime socket read/write/partial-frame deadlines are not implemented,
 - sufficiently many idle clients could occupy all available connection slots,
 - message IDs can be reused after ACK,

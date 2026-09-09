@@ -282,13 +282,21 @@ public class ClientSession implements Runnable {
             return;
         }
 
-        boolean registered =
+        ClientRegistry.RegistrationResult registration =
                 clientRegistry.register(
                         command.clientId(),
                         this
                 );
 
-        if (!registered) {
+        if (registration == ClientRegistry.RegistrationResult.IDENTITY_LIMIT_REACHED) {
+            sendError(
+                    ErrorCode.IDENTITY_LIMIT_REACHED,
+                    "Server identity limit reached"
+            );
+            return;
+        }
+
+        if (registration == ClientRegistry.RegistrationResult.IDENTITY_IN_USE) {
 
             sendError(
                     ErrorCode.IDENTITY_IN_USE,

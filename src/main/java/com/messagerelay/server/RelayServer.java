@@ -1,13 +1,7 @@
 package com.messagerelay.server;
 
-import com.messagerelay.protocol.FrameCodec;
-import com.messagerelay.protocol.ProtocolCodec;
-import com.messagerelay.protocol.events.ErrorEvent;
-import com.messagerelay.protocol.types.ErrorCode;
-import com.messagerelay.protocol.types.MessageType;
 import com.messagerelay.service.RelayService;
 
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -50,12 +44,6 @@ public class RelayServer {
 
     private final Set<Socket> activeSockets =
             ConcurrentHashMap.newKeySet();
-
-    private final FrameCodec frameCodec =
-            new FrameCodec();
-
-    private final ProtocolCodec protocolCodec =
-            new ProtocolCodec();
 
     private volatile boolean running;
 
@@ -168,33 +156,14 @@ public class RelayServer {
             Socket socket
     ) {
 
-        try (
-                socket;
-                DataOutputStream output =
-                        new DataOutputStream(
-                                socket.getOutputStream()
-                        )
-        ) {
-
-            ErrorEvent error =
-                    new ErrorEvent(
-                            MessageType.ERROR,
-                            ErrorCode.CONNECTION_LIMIT_REACHED,
-                            "Server connection limit reached"
-                    );
-
-            frameCodec.writeFrame(
-                    output,
-                    protocolCodec.encode(error)
+        try {
+            socket.close();
+        } catch (IOException failure) {
+            LOGGER.log(
+                    System.Logger.Level.DEBUG,
+                    "Could not close rejected connection",
+                    failure
             );
-
-        } catch (IOException _) {
-
-            /*
-             * The connection is already being rejected.
-             * If the client disappears before receiving
-             * the error there is nothing else to do.
-             */
         }
     }
 

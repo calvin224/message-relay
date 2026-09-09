@@ -1,9 +1,7 @@
 package com.messagerelay.integration.server;
 
 import com.messagerelay.protocol.commands.RegisterCommand;
-import com.messagerelay.protocol.events.ErrorEvent;
 import com.messagerelay.protocol.events.RegisteredEvent;
-import com.messagerelay.protocol.types.ErrorCode;
 import com.messagerelay.protocol.types.MessageType;
 import com.messagerelay.server.RelayServer;
 import org.junit.jupiter.api.Test;
@@ -133,11 +131,6 @@ class RelayServerIntegrationTest {
                 );
             }
 
-            /*
-             * All 100 permits are now occupied.
-             * Connection 101 should receive a clear
-             * protocol error and then be closed.
-             */
             try (Socket overflowClient =
                          new Socket(
                                  "localhost",
@@ -154,22 +147,17 @@ class RelayServerIntegrationTest {
                                         .getInputStream()
                         );
 
-                ErrorEvent error =
-                        readEvent(
-                                input,
-                                ErrorEvent.class
-                        );
+                try (Socket anotherOverflowClient = new Socket("localhost", port)) {
+                    anotherOverflowClient.setSoTimeout(2_000);
+                    assertEquals(-1, anotherOverflowClient.getInputStream().read());
+                }
 
                 assertEquals(
-                        MessageType.ERROR,
-                        error.type()
-                );
-
-                assertEquals(
-                        ErrorCode.CONNECTION_LIMIT_REACHED,
-                        error.code()
+                        -1,
+                        input.read()
                 );
             }
+
 
         } finally {
 
