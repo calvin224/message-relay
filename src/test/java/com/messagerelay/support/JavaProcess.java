@@ -85,7 +85,8 @@ public final class JavaProcess implements AutoCloseable {
     public void close() throws InterruptedException {
         try {
             input.close();
-        } catch (IOException ignored) {
+        } catch (IOException failure) {
+            transcript.append("Could not close process input: ").append(failure).append('\n');
         }
         if (!process.waitFor(2, TimeUnit.SECONDS)) {
             process.destroyForcibly();

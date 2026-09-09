@@ -52,7 +52,7 @@ public class ProtocolCodec {
                     typeNode.asText()
             );
 
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException _) {
 
             throw new IllegalArgumentException(
                     "Unknown message type: "

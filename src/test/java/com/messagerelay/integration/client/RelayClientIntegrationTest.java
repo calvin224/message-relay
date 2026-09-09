@@ -30,7 +30,8 @@ class RelayClientIntegrationTest {
     @Test
     void given_no_identity_when_client_starts_then_usage_is_printed_and_process_exits() throws Exception {
         try (JavaProcess client = new JavaProcess(RelayClient.class)) {
-            client.awaitOutput("Usage: RelayClient <clientId>");
+            assertTrue(client.awaitOutput("Usage: RelayClient")
+                    .endsWith("Usage: RelayClient <clientId> [host] [port]"));
             client.awaitSuccessfulExit();
         }
     }
@@ -104,7 +105,8 @@ class RelayClientIntegrationTest {
             connection.setSoTimeout(5_000);
             readEvent(input, RegisterCommand.class);
             connection.shutdownOutput();
-            client.awaitOutput("Server closed the connection.");
+            assertTrue(client.awaitOutput("Server closed")
+                    .endsWith("Server closed the connection."));
             client.sendLine("quit");
             client.awaitSuccessfulExit();
         }
@@ -121,7 +123,8 @@ class RelayClientIntegrationTest {
             readEvent(input, RegisterCommand.class);
             output.writeInt(0);
             output.flush();
-            client.awaitOutput("Connection closed: Invalid frame length: 0");
+            assertTrue(client.awaitOutput("Connection closed:")
+                    .endsWith("Connection closed: Invalid frame length: 0"));
             client.sendLine("quit");
             client.awaitSuccessfulExit();
         }
