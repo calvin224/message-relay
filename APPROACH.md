@@ -1,977 +1,116 @@
 # Approach
 
-## Scope
+## Scope and choices
 
-The goal of this implementation is a small, explainable message relay that owns its registration, mailbox, delivery, acknowledgement, reconnect, and failure behaviour.
+The aim was a small relay that can be explained and changed, not a production messaging platform.
 
-The final implementation uses:
+The acceptance criteria are the seven core scenarios: multiple registered clients; addressed, uniquely identified sends; acceptance/rejection; delivery and explicit recipient ACK; offline retention; reconnect with the same identity; and redelivery after disconnect without ACK.
 
-- Java 25,
-- standard TCP sockets,
-- a length-prefixed JSON protocol,
-- Java virtual threads,
-- bounded in-memory mailboxes,
-- bounded per-client outbound queues,
-- explicit acknowledgements,
-- focused unit tests,
-- real socket integration tests.
+Java 25 provides virtual threads for straightforward blocking socket code. TCP gives a bidirectional connection for commands and deliveries. Length-prefixed JSON keeps the wire format inspectable, with Jackson handling serialization. No messaging library owns relay behaviour.
 
-Jackson is used for JSON serialization only.
+State is kept in memory. Docker is included, but persistence and strict concurrent FIFO were optional and remain unimplemented.
 
-No message broker, database, messaging framework, or cloud messaging service owns the relay behaviour.
+## Protocol
 
-The required core scenarios were prioritised first. Docker was implemented as an optional bonus.
+There are no HTTP routes. Each TCP frame is a four-byte signed big-endian payload length followed by UTF-8 JSON. Valid incoming lengths are 1–65,536 bytes. The `type` field selects the handler.
 
-[`DESIGN.md`](DESIGN.md) provides the class diagrams, command-routing map, delivery sequence, and test-class index. This document explains the decisions and protocol contract; [`README.md`](README.md) contains the runnable commands.
+| Direction | Type | Other fields |
+| --- | --- | --- |
+| Client → server | `REGISTER` | `clientId` |
+| Client → server | `SEND` | `messageId`, `recipientId`, `body` |
+| Client → server | `ACK` | `messageId` |
+| Server → client | `REGISTERED` | `clientId` |
+| Server → sender | `SEND_RESULT` | `messageId`, `accepted`, `reason` |
+| Server → recipient | `DELIVERY` | `messageId`, `senderId`, `body` |
+| Server → client | `ERROR` | `code`, `message` |
 
-Strict FIFO and durable persistence were intentionally not included in the final implementation because both were optional bonuses and would add significantly more sequencing, recovery, and failure-state complexity.
+For example, these are JSON payloads; each needs its own length prefix on the wire:
 
----
+```json
+{"type":"SEND","messageId":"msg-1","recipientId":"bob","body":"hello"}
+{"type":"SEND_RESULT","messageId":"msg-1","accepted":true,"reason":null}
+{"type":"DELIVERY","messageId":"msg-1","senderId":"alice","body":"hello"}
+{"type":"ACK","messageId":"msg-1"}
+```
 
-# Acceptance Criteria
+IDs must be nonblank and the body must be present; an empty body is allowed. The sender and acknowledging recipient are taken from the registered connection, not trusted client-supplied identity fields. The final encoded DELIVERY size is checked before accepting a SEND.
 
-## Core Scenario
+## Connection and message lifecycle
 
-| # | Requirement | Status | Main Classes | Evidence |
-| --- | --- | --- | --- | --- |
-| 1 | A client registers with a unique name/ID and multiple clients may register simultaneously | ✅ | `ClientSession`, `ClientRegistry`, `ClientContext` | Socket registration tests |
-| 2 | Either client can send a uniquely identified message to the other | ✅ | `SendCommand`, `RelayMessage`, `ClientSession`, `RelayService` | Service and socket SEND tests |
-| 3 | The service confirms whether it accepted or rejected the SEND | ✅ | `SendResult`, `SendResultEvent`, `RelayService` | Accepted/rejected SEND tests |
-| 4 | The recipient receives the message and explicitly ACKs it | ✅ | `DeliveryEvent`, `AckCommand`, `ClientSession`, `RelayService` | Delivery + ACK integration test |
-| 5 | Messages sent to an offline recipient are retained within resource limits | ✅ | `ClientContext`, `Mailbox`, `RelayService` | Offline-delivery and mailbox-limit tests |
-| 6 | The same identity can reconnect and receive offline messages | ✅ | `ClientRegistry`, `ClientContext`, `ClientSession.deliverPendingMessages()` | Reconnect integration tests |
-| 7 | Delivered-but-unacknowledged messages remain available after disconnect | ✅ | `Mailbox`, `RelayService`, reconnect replay | Unacknowledged-redelivery integration test |
+- A client connects and sends `REGISTER`. Only one active connection may own an identity. Registering twice on one connection is rejected.
+- A successful registration attaches the existing or new mailbox, queues `REGISTERED`, then replays pending messages.
+- SEND acceptance means stored in the recipient's in-memory mailbox, not received or durably saved. The recipient must have registered at least once; an unknown recipient is rejected.
+- Online recipients receive a queued DELIVERY. Offline messages stay in the mailbox.
+- Disconnect clears the matching active session, not the identity or mailbox. Reconnect uses a new socket and the same ID. The CLI reconnects manually.
+- Only the recipient's ACK removes a pending message and releases its ID. There is no ACK-success response.
 
----
+Delivery is at least once within the running process: duplicates are possible, including when reconnect overlaps a send. Unacknowledged messages replay on reconnect, not on a timer.
 
-# Behaviour Requirements
+Pending message IDs are globally unique; duplicate SENDs are rejected rather than treated as successful retries. IDs can be reused after ACK. Unknown, repeated and wrong-recipient ACKs are no-ops; an ACK before registration is ignored. A delayed stale ACK can remove a newer message if its ID has been reused, so clients should use fresh IDs.
 
-| Requirement | Implementation |
+Mailboxes preserve insertion order. Strict FIFO across concurrent sends and reconnects is not guaranteed because storage and online delivery are separate operations. Independent writers also mean the recipient can observe DELIVERY before the sender observes SEND_RESULT.
+
+## State and concurrency
+
+The class map is in [DESIGN.md](DESIGN.md).
+
+- `ClientRegistry` keeps a concurrent map of identities. Synchronized registration makes the 100-identity capacity check and insertion atomic. Existing IDs are looked up first, so reconnect works at capacity.
+- Each `ClientContext` has a lock protecting its active session and mailbox. Registration takes the registry monitor then this lock; other state operations take only the client lock.
+- `RelayService` uses a concurrent set to reserve pending message IDs. A failed mailbox insertion releases its reservation.
+- Each admitted socket has a virtual reader/session task and a separate virtual writer. Other sessions enqueue events rather than writing directly to that socket.
+- Queue offers do not wait. A full outbound queue closes that connection, leaving pending mailbox entries for reconnect.
+
+The limits are listed in [README.md](README.md#limits-and-shutdown). Together, 100 identities and 100 messages per mailbox cap retained messages at 10,000, but this is not an exact JVM heap budget.
+
+Identities are never evicted: abandoned IDs keep their slots until restart. This avoids discarding accepted messages to make room for new clients.
+
+## Errors and resource limits
+
+| Condition | Result |
 | --- | --- |
-| Re-register identity without losing queued messages | Disconnect clears the active session but keeps the logical `ClientContext` and mailbox. |
-| Correct-recipient ACK only | ACKs operate against the mailbox of the identity registered on that TCP connection. |
-| At-least-once delivery | Messages remain pending until ACK and may therefore be delivered more than once. |
-| Bounded mailbox | 100 pending messages per logical identity. |
-| Bounded identity registry | 100 retained identities, including offline clients; existing identities may reconnect at capacity. |
-| Bounded message size | 65,536-byte UTF-8 frame payload limit. |
-| Bounded connections | Maximum 100 active connections. |
-| Bounded buffers | Maximum 128 outbound events per client session. |
-| Invalid input | Explicit protocol errors where possible. |
-| Resource limit reporting | Defined SEND rejection/error behaviour for mailbox, frame, and connection limits. |
-| Duplicate SEND | Pending message IDs are globally unique; duplicates are rejected. |
-| Repeated ACK | Harmless no-op after a message has already been removed. |
-| Stale ACK | Behaviour is documented; clients should avoid ID reuse. |
-| Ordering | Sequential mailbox insertion order is preserved; strict concurrent FIFO is not guaranteed. |
-| Slow clients | Dedicated writer + bounded outbound queue isolates normal slow writes from unrelated clients. |
-| Malformed clients | Errors are handled per connection. |
-| Concurrent operations | Concurrent collections, a short registration monitor, and recipient-scoped locks protect shared state. |
-| Predictable shutdown | Active sockets and listener are closed; executor shutdown is bounded; JVM shutdown hook invokes `stop()`. |
+| Missing/blank required fields | `ERROR / INVALID_MESSAGE` |
+| Malformed JSON or command shape | `ERROR / MALFORMED_MESSAGE` |
+| Missing, unknown or unsupported type | `ERROR / INVALID_MESSAGE_TYPE` |
+| Identity already online | `ERROR / IDENTITY_IN_USE` |
+| Register twice on one connection | `ERROR / ALREADY_REGISTERED` |
+| New ID at identity capacity | `ERROR / IDENTITY_LIMIT_REACHED`; socket stays unregistered and can try an existing offline ID |
+| SEND before registration, unknown recipient, duplicate pending ID, full mailbox or oversized DELIVERY | Rejected `SEND_RESULT` with a reason |
+| Active connection limit reached | Close without a protocol response; client sees EOF/reset |
+| Invalid frame length, truncated stream, socket failure or full outbound queue | Close affected connection |
 
----
+Recoverable JSON/command errors leave the connection usable unless its output queue fills. A partial frame on a still-open socket can wait indefinitely because there is no read deadline.
 
-# Architecture
+Excess connections are closed without writing an error on the accept thread. This avoids a rejection write blocking admission, but the client cannot distinguish capacity rejection from another disconnect.
 
-```text
-                     +-------------------+
-                     |    RelayClient    |
-                     | interactive CLI   |
-                     +---------+---------+
-                               |
-                               | TCP
-                               |
-                     +---------v---------+
-                     |    RelayServer    |
-                     | listener / limits |
-                     | lifecycle         |
-                     +---------+---------+
-                               |
-                        creates session
-                               |
-                     +---------v---------+
-                     |   ClientSession   |
-                     | protocol dispatch |
-                     | reader / writer   |
-                     +----+---------+----+
-                          |         |
-                          |         |
-              +-----------v--+   +--v---------------+
-              | FrameCodec / |   |   RelayService   |
-              |ProtocolCodec |   | message rules    |
-              +--------------+   +--------+----------+
-                                         |
-                               +---------v---------+
-                               |  ClientRegistry   |
-                               | logical clients   |
-                               +---------+---------+
-                                         |
-                               +---------v---------+
-                               |  ClientContext    |
-                               | session / lock /  |
-                               | mailbox           |
-                               +---------+---------+
-                                         |
-                               +---------v---------+
-                               |     Mailbox       |
-                               | pending messages  |
-                               +-------------------+
-```
+## Shutdown and build
 
-The most important architectural distinction is:
+The JVM shutdown hook calls `RelayServer.stop()`, closing the listener and active sockets. As `start()` unwinds, it shuts down the executor, waits up to two seconds and interrupts remaining tasks. State is lost when the process exits.
 
-```text
-logical client != TCP connection
-```
+The Maven Wrapper runs compilation and tests; JaCoCo records coverage and Shade builds the executable JAR. CI uploads that JAR. Exact commands, ports and Docker lifecycle controls are in [README.md](README.md).
 
-A connection may disappear.
+## Tests and boundaries
 
-The logical client and its mailbox remain for the lifetime of the relay process.
-
-That allows disconnect/reconnect semantics without trying to preserve a dead socket.
-
----
-
-# Class Responsibilities
-
-| Class | Responsibility |
+| Tests | Main coverage |
 | --- | --- |
-| `Main` | Creates the relay, installs the shutdown hook, and starts the application. |
-| `RelayServer` | Owns the listening socket, connection permits, active sockets, virtual-thread executor, and shutdown lifecycle. |
-| `ClientSession` | Owns one TCP connection, reads frames, dispatches commands, tracks registration, and queues outbound events. |
-| `ClientRegistry` | Maps logical client IDs to retained `ClientContext` instances. |
-| `ClientRegistry.RegistrationResult` | Distinguishes registration success, an active identity conflict, and identity capacity rejection. |
-| `ClientContext` | Holds identity, active session, mailbox, and recipient-scoped lock. |
-| `Mailbox` | Stores bounded pending messages in insertion order. |
-| `RelayService` | Owns SEND acceptance, duplicate-ID handling, mailbox storage, and ACK removal. |
-| `RelayMessage` | Internal representation of a pending message. |
-| `SendResult` | Transport-independent SEND result. |
-| `FrameCodec` | Implements TCP framing and frame-size validation. |
-| `ProtocolCodec` | Maps JSON to/from command/event records. |
-| `RegisterCommand` | Registration request. |
-| `SendCommand` | Addressed SEND request. |
-| `AckCommand` | Recipient acknowledgement. |
-| `RegisteredEvent` | Registration confirmation. |
-| `SendResultEvent` | SEND acceptance/rejection response. |
-| `DeliveryEvent` | Recipient message delivery. |
-| `ErrorEvent` | Protocol/resource error. |
-| `RelayClient` | Interactive CLI used to demonstrate the protocol. |
+| Protocol and service unit tests | Framing, UTF-8, JSON, invalid sizes, SEND results, duplicate IDs, mailbox capacity and ACK ownership |
+| Registry unit tests | Identity cap, active conflicts, retained mailbox, stale disconnect and concurrent admission to the final slot |
+| Session/server socket tests | Registration, delivery, ACK, offline/reconnect/redelivery, malformed input, DELIVERY size, capacity rejection and shutdown |
+| CLI/server process tests | Actual entry points, console commands, event display, EOF/errors and the JVM shutdown hook |
 
----
+Tests use real local sockets with temporary ports and bounded waits. Awaitility checks state changes; latches coordinate the registration race. Child JVMs inherit JaCoCo so entry-point execution contributes to coverage. No external service is required.
 
-# Why TCP?
+These are focused regression tests, not exhaustive concurrency, load, slow-client or heap-usage tests. The shutdown-hook test does not replace checking Docker/SIGTERM behaviour.
 
-I considered an HTTP/REST design because registration, SEND, and ACK naturally map to API operations.
+## Limitations and next steps
 
-For example:
+The main remaining limitations are:
+- No persistence, authentication, TLS or multiple server replicas.
+- No runtime registration/read/write deadlines; idle clients can occupy all connection slots.
+- No identity expiry or separate global queued-byte budget.
+- No automatic reconnect, periodic retry or strict concurrent FIFO.
+- ID reuse makes sufficiently delayed stale ACKs ambiguous.
 
-```text
-POST /clients
-POST /messages
-POST /messages/{id}/ack
-```
-
-However, the exercise also puts significant emphasis on:
-
-- persistent connections,
-- server-to-client delivery,
-- disconnect/reconnect behaviour,
-- connection lifecycle,
-- framing,
-- explicit ACKs,
-- slow clients,
-- bounded buffers.
-
-Pure REST request/response does not naturally provide a persistent server-to-client delivery channel.
-
-A REST-based production design would likely need an additional mechanism such as:
-
-```text
-REST
-  -> commands
-
-WebSocket / SSE / long polling
-  -> delivery
-```
-
-That is a valid design, but it introduces multiple communication models.
-
-For this exercise I chose raw TCP so the relevant behaviour remains explicit:
-
-```text
-persistent bidirectional TCP connection
-            +
-application framing
-            +
-REGISTER / SEND / DELIVERY / ACK protocol
-```
-
-The business logic remains separated behind `RelayService`, so another transport adapter could be introduced later without putting HTTP-specific logic into the relay domain.
-
-TCP is therefore not claimed to be universally better than REST; it was selected because it directly exposes the connection and messaging behaviours emphasised by this exercise.
-
----
-
-# Protocol Model
-
-## TCP Framing
-
-TCP is a byte stream and does not preserve message boundaries.
-
-Each protocol message is therefore:
-
-```text
-4-byte signed big-endian integer
-        +
-N bytes UTF-8 JSON
-```
-
-The integer contains the payload size.
-
-Maximum JSON payload:
-
-```text
-65,536 bytes
-```
-
-The four-byte prefix is not included in this limit.
-
-Invalid sizes or incomplete frames close the affected connection.
-
----
-
-# Protocol Messages
-
-## REGISTER
-
-```json
-{
-  "type": "REGISTER",
-  "clientId": "bob"
-}
-```
-
-Response:
-
-```json
-{
-  "type": "REGISTERED",
-  "clientId": "bob"
-}
-```
-
-Only one active connection may own a given identity.
-
-The registry retains at most 100 identities, online and offline combined. A new identity at capacity receives `ERROR / IDENTITY_LIMIT_REACHED` with message `Server identity limit reached`. The connection remains unregistered and can try an existing offline identity. Existing active identities still receive `IDENTITY_IN_USE`.
-
-Disconnect does not release an identity slot or discard its mailbox. There is no eviction, expiry, or delete command; resetting the process clears everything. This intentionally favours retaining accepted messages over admitting more identities.
-
----
-
-## SEND
-
-```json
-{
-  "type": "SEND",
-  "messageId": "msg-1",
-  "recipientId": "bob",
-  "body": "hello bob"
-}
-```
-
-The sender ID is taken from the registered connection rather than supplied by the client.
-
-Accepted response:
-
-```json
-{
-  "type": "SEND_RESULT",
-  "messageId": "msg-1",
-  "accepted": true,
-  "reason": null
-}
-```
-
-Rejected example:
-
-```json
-{
-  "type": "SEND_RESULT",
-  "messageId": "msg-1",
-  "accepted": false,
-  "reason": "Duplicate message ID"
-}
-```
-
----
-
-## DELIVERY
-
-```json
-{
-  "type": "DELIVERY",
-  "messageId": "msg-1",
-  "senderId": "alice",
-  "body": "hello bob"
-}
-```
-
-Receiving a DELIVERY does not remove the message.
-
----
-
-## ACK
-
-```json
-{
-  "type": "ACK",
-  "messageId": "msg-1"
-}
-```
-
-The acknowledging identity is derived from the registered connection.
-
-The protocol does not send a separate ACK-success response.
-
----
-
-## ERROR
-
-Example:
-
-```json
-{
-  "type": "ERROR",
-  "code": "INVALID_MESSAGE",
-  "message": "messageId is required"
-}
-```
-
-Errors cover malformed input, invalid command types, required-field validation, registration conflicts, and connection limits.
-
----
-
-# Connection Lifecycle
-
-## Registration
-
-```text
-TCP connect
-    |
-REGISTER bob
-    |
-REGISTERED bob
-    |
-normal messaging
-```
-
----
-
-## Disconnect
-
-When Bob's socket closes:
-
-```text
-ClientSession disconnected
-        |
-active session cleared
-        |
-ClientContext("bob") remains
-        |
-Mailbox remains
-```
-
-This is why the logical identity survives the TCP connection.
-
----
-
-## Offline SEND
-
-Alice can then send to Bob:
-
-```text
-Alice SEND
-    |
-RelayService
-    |
-Bob Mailbox
-```
-
-Because Bob has no active session, no live DELIVERY is attempted.
-
----
-
-## Reconnect
-
-Bob reconnects:
-
-```text
-new TCP connection
-        |
-REGISTER bob
-        |
-existing ClientContext reused
-        |
-REGISTERED
-        |
-pending mailbox replayed
-```
-
-The same mechanism also replays messages that were previously delivered but not acknowledged.
-
-State is retained only while the relay process itself remains running.
-
----
-
-# Delivery Semantics
-
-The relay provides:
-
-```text
-at-least-once delivery
-within a running relay process
-```
-
-SEND acceptance means:
-
-```text
-the relay successfully stored the message
-in the recipient's bounded in-memory mailbox
-```
-
-It does not mean the recipient has received or processed it.
-
-The lifecycle is:
-
-```text
-SEND
-  |
-store message
-  |
-SEND_RESULT ACCEPTED
-  |
-DELIVERY if recipient online
-  |
-wait for ACK
-  |
-remove message
-```
-
-If the recipient disconnects after DELIVERY but before ACK:
-
-```text
-message remains pending
-        |
-recipient reconnects
-        |
-message delivered again
-```
-
-Duplicate deliveries are therefore possible by design.
-
----
-
-# ACK Semantics
-
-Only the intended recipient can remove its message.
-
-For:
-
-```text
-Alice -> Bob : msg-1
-```
-
-Bob can ACK `msg-1`.
-
-Another client's ACK cannot remove the message because ACK processing uses that client's own registered mailbox.
-
-Repeated ACKs after removal are harmless.
-
-Unknown ACK IDs are ignored.
-
-Message IDs may be reused after ACK. This introduces a documented stale-ACK limitation: a sufficiently delayed ACK combined with reuse of an old ID could refer to a newer message.
-
-Clients should therefore use globally unique message IDs.
-
----
-
-# Duplicate SEND Behaviour
-
-Pending message IDs are stored in a concurrent set.
-
-If `msg-1` is already pending:
-
-```text
-SEND msg-1
-```
-
-is rejected.
-
-When the original message is successfully ACKed, its pending-ID reservation is released.
-
-This gives the system one unambiguous pending message for each message ID.
-
----
-
-# Ordering
-
-`Mailbox` stores messages using an insertion-ordered deque.
-
-Sequential messages are therefore stored and replayed in insertion order.
-
-Strict FIFO is **not guaranteed** when multiple clients send concurrently.
-
-Concurrent sends compete for the recipient lock, and online delivery occurs separately from mailbox insertion.
-
-Reconnect replay and newly arriving online messages may also interleave.
-
-FIFO was an optional bonus in the exercise, so the final implementation documents this behaviour rather than adding additional sequencing infrastructure.
-
----
-
-# State Model
-
-Each logical client owns:
-
-```text
-ClientContext
-    |
-    +-- clientId
-    +-- active ClientSession or null
-    +-- Mailbox
-    +-- ReentrantLock
-```
-
-A message remains in the mailbox while it is:
-
-```text
-accepted
-    |
-delivered
-    |
-possibly redelivered
-```
-
-It leaves the mailbox only after ACK.
-
-There is no separate `in-flight` collection because delivered-but-unacknowledged messages are still pending.
-
----
-
-# Concurrency Model
-
-## Connections
-
-`RelayServer` uses a virtual-thread-per-task executor.
-
-Each admitted socket has an independent `ClientSession`.
-
-This keeps blocking socket code simple while avoiding a platform thread for every blocked connection.
-
----
-
-## Reads
-
-The session reads framed commands from its own connection.
-
-A malformed or blocked reader affects that connection rather than the server's other sessions.
-
----
-
-## Writes
-
-Each `ClientSession` has:
-
-```text
-bounded outbound queue
-        +
-dedicated writer virtual thread
-```
-
-Only that writer writes normal protocol events to the session's socket.
-
-This prevents concurrent producers from interleaving bytes on the same TCP stream.
-
-It also prevents normal slow network writes from occurring directly inside unrelated message-processing paths.
-
----
-
-## Shared State
-
-The implementation uses:
-
-- `ConcurrentHashMap` for logical clients,
-- a concurrent set for pending message IDs,
-- one `ReentrantLock` per logical client.
-
-The per-client lock protects:
-
-- active-session changes,
-- mailbox changes,
-- recipient-specific operations.
-
-`ClientRegistry.register()` is synchronized so checking the retained-identity count and inserting a new identity are one atomic operation. Existing identities are looked up before the capacity check, so reconnects still work at capacity. Registration then takes that identity's lock to attach the session.
-
-Only registration takes this short registry-wide monitor. SEND, ACK, delivery, and disconnect use recipient-scoped locks, not the registration monitor. The lock order is registry monitor then client lock; no path holding a client lock acquires the registry monitor. No network writes occur during registration.
-
----
-
-# Resource Bounds
-
-| Resource | Limit | Exceeded Behaviour |
-| --- | ---: | --- |
-| Frame payload | 65,536 bytes | Invalid connection frame closes socket; oversized resulting DELIVERY rejects SEND |
-| Pending mailbox | 100 messages | SEND rejected |
-| Retained identities | 100 | New identity receives `ERROR / IDENTITY_LIMIT_REACHED`; reconnect remains allowed |
-| Active connections | 100 | Excess connection closes immediately without a protocol response |
-| Outbound queue | 128 events | Affected client socket closes |
-| Shutdown wait | 2 seconds | Remaining executor work is interrupted |
-
-The values are constants to keep the exercise small and reproducible.
-
-A production implementation would likely make them configurable.
-
-The identity and mailbox limits together bound retained mailboxes to 10,000 messages. With a maximum encoded DELIVERY of 65,536 bytes each, that is up to 625 MiB of encoded delivery data, not a JVM heap guarantee: Java objects, strings, identities, outbound queues, and temporary encoding allocations add overhead. There is no separate global byte budget.
-
-Connection-limit rejection closes the socket without writing from the accept thread. A peer that never reads therefore cannot stall admission through a rejection write. The trade-off is that excess clients see EOF/reset rather than a structured reason. This replaces the earlier `CONNECTION_LIMIT_REACHED` event; that error code is no longer emitted or defined. Normal admitted-session errors still use the bounded writer queue.
-
----
-
-# DELIVERY Frame Validation
-
-SEND and DELIVERY are not identical protocol messages.
-
-SEND contains:
-
-```text
-messageId
-recipientId
-body
-```
-
-DELIVERY contains:
-
-```text
-messageId
-senderId
-body
-```
-
-It is therefore possible for an inbound SEND to fit within the frame limit while its resulting DELIVERY exceeds the limit.
-
-Reasons include:
-
-- sender ID size,
-- UTF-8 multibyte characters,
-- JSON escaping.
-
-Before accepting a registered SEND, the relay serializes the eventual DELIVERY and validates its final UTF-8 size.
-
-If it is too large:
-
-```text
-SEND_RESULT
-accepted = false
-reason = Delivery frame exceeds maximum size
-```
-
-The message is not stored and the message ID is not reserved.
-
-Tests cover boundary behaviour including UTF-8 and JSON escaping.
-
----
-
-# Slow, Malformed, and Disconnected Clients
-
-Malformed JSON is handled inside the associated `ClientSession`.
-
-Where safe, an error response is returned and the connection remains usable.
-
-Malformed input does not terminate the relay or unrelated client sessions.
-
-Slow readers are isolated using:
-
-```text
-bounded queue
-    +
-dedicated writer
-```
-
-If a client's outbound queue becomes full, that connection is closed rather than allowing memory use to grow without bound.
-
-One known limitation is that runtime sockets do not currently have registration/read/write/partial-frame deadlines.
-
-An idle client can therefore occupy one of the bounded connection slots indefinitely.
-
----
-
-# Shutdown
-
-`RelayServer.stop()`:
-
-1. stops the accept loop,
-2. closes the listening socket,
-3. closes active client sockets,
-4. allows client tasks to terminate,
-5. bounds executor shutdown,
-6. interrupts remaining work if required.
-
-`Main` installs a JVM shutdown hook.
-
-The server also accepts an optional port argument, defaulting to `9000`. Tests use port `0` and read the actual bound port from startup output. The client accepts `<clientId> [host] [port]`, retaining `localhost:9000` as its default destination. This allows isolated entry-point tests without depending on a free fixed port.
-
-Therefore both:
-
-```text
-Ctrl+C
-Docker SIGTERM
-```
-
-invoke the controlled shutdown path.
-
-This behaviour was manually verified through Docker Compose.
-
----
-
-# Testing Strategy
-
-The test suite is intentionally focused on behavioural requirements and important boundaries.
-
-## Unit Tests
-
-### `FrameCodecTest`
-
-Covers:
-
-- framing round trip,
-- UTF-8,
-- invalid frame lengths,
-- incomplete input,
-- oversized output.
-
-### `ProtocolCodecTest`
-
-Covers protocol JSON encoding/decoding and message-type behaviour.
-
-### `RelayServiceTest`
-
-Covers:
-
-- accepted SEND,
-- duplicate pending message ID,
-- mailbox full,
-- wrong-recipient ACK,
-- repeated ACK.
-
-### `ClientRegistryTest`
-
-Covers the 100-identity boundary, rejection without retaining the rejected ID, reconnect with the original mailbox, active identity conflicts, stale-session disconnect safety, and two concurrent registrations competing for the final slot. The concurrency test uses bounded latches and futures rather than sleeps.
-
----
-
-## Integration Tests
-
-### `ClientSessionIntegrationTest`
-
-Uses real local sockets to cover:
-
-- registration,
-- SEND / SEND_RESULT,
-- DELIVERY,
-- ACK,
-- offline retention,
-- reconnect,
-- delivered-but-unacknowledged redelivery,
-- malformed JSON,
-- required-field validation.
-
-Also verifies `IDENTITY_LIMIT_REACHED` over TCP, followed by a successful reconnect on the same socket and delivery/ACK of a retained offline message.
-
-### `DeliveryFrameSizeIntegrationTest`
-
-Covers:
-
-- exact frame-size boundary,
-- one byte over the boundary,
-- UTF-8,
-- JSON escaping,
-- rejection without retaining mailbox/message-ID state.
-
-### `RelayServerIntegrationTest`
-
-Covers server-level behaviour including:
-
-- connection admission limits,
-- active clients,
-- controlled shutdown.
-
-At capacity, a second excess connection is checked before reading from the first rejected peer, verifying that rejection does not require that peer to read. This is a focused regression test, not a network-load or slow-client stress test.
-
-Tests use bounded test-side timeouts so failures terminate deterministically.
-
-Awaitility 4.3.0 is test-only and waits for observable mailbox/disconnect conditions with a two-second deadline. It does not implement relay retry or delivery behaviour.
-
-### `RelayClientIntegrationTest`
-
-Launches the real `RelayClient.main` in a child JVM against a local socket peer. Tests cover usage without an identity, help and invalid commands, registration, SEND serialization and result display, DELIVERY display, explicit rather than automatic ACK, quit, console EOF, server EOF, and malformed server frames. Bare `send` and `ack` commands now display their specific usage instructions.
-
-### `MainIntegrationTest`
-
-Launches `Main.main` in a child JVM, registers a real socket client, then requests normal JVM exit through a test-only stdin control thread. The test verifies the shutdown-hook output, active-client disconnection, and successful process exit. This exercises JVM shutdown portably without terminating Maven or relying on platform-specific signals. It does not replace Docker/SIGTERM testing or exercise the rare `IOException` logging path in `Main.shutdown`.
-
-The test process helper forwards the active JaCoCo agent to child JVMs and waits for them to exit, allowing coverage to be collected in the existing report. These tests have 15-second JUnit limits, five-second socket/output/exit waits, and bounded cleanup for failed processes. Coverage measures actual entry-point execution; no production classes are excluded to improve the percentage.
-
----
-
-# Build and Artifact Model
-
-The local path is:
-
-```text
-source
-  |
-Maven Wrapper
-  |
-compile
-  |
-tests
-  |
-JaCoCo
-  |
-Maven Shade
-  |
-executable JAR
-```
-
-Runnable artifact:
-
-```text
-target/message-relay-1.0.0-SNAPSHOT.jar
-```
-
-GitHub Actions separates:
-
-```text
-Build
-Unit Tests
-Integration Tests
-SonarQube Analysis
-Package
-```
-
-The package job uploads the executable JAR.
-
----
-
-# Docker
-
-The Docker bonus is implemented using a multi-stage image:
-
-```text
-Java 25 JDK
-    |
-Maven build
-    |
-executable shaded JAR
-    |
-Java 25 JRE
-```
-
-The simplest reproducible startup is:
-
-```sh
-docker compose up --build
-```
-
-The container exposes port `9000`.
-
-No additional infrastructure is required.
-
----
-
-# Trade-offs
-
-## In-memory state
-
-The exercise allows in-memory state.
-
-This keeps the implementation focused on:
-
-- logical identity,
-- connection lifecycle,
-- ACK semantics,
-- reconnect,
-- resource bounds,
-- concurrency.
-
-The trade-off is that queued messages disappear if the entire relay process restarts.
-
-Durable restart recovery was optional and was deliberately left out of the final implementation.
-
----
-
-## No strict FIFO
-
-Sequential mailbox insertion order is maintained, but strict ordering across concurrent sends is not guaranteed.
-
-FIFO was optional.
-
-The final solution therefore documents the semantics instead of introducing additional sequencing and dispatch complexity.
-
----
-
-## Fixed configuration
-
-Resource limits are constants. Server port and client host/port can be supplied as command-line arguments; their defaults are constants.
-
-This keeps the exercise easy to reproduce and inspect.
-
-A production system would externalise these settings.
-
----
-
-## No authentication/TLS
-
-Authentication and encryption are outside the scope of this exercise.
-
-An offline identity can therefore be claimed by another connection that knows its ID.
-
----
-
-# Known Limitations
-
-- In-memory messages and identities are lost on process restart.
-- Durable persistence/recovery is not implemented.
-- Strict FIFO under concurrent sends is not guaranteed.
-- Retained identities are capped at 100 but have no expiry or eviction; abandoned IDs keep their slots until restart.
-- There is no separate global queued-byte/heap budget; fixed count and frame-size bounds can still permit substantial memory use.
-- Production sockets have no read/write/partial-frame deadlines.
-- Idle connections can occupy connection capacity indefinitely.
-- IDs may be reused after ACK, allowing a theoretical stale-ACK ambiguity.
-- There is no automatic client reconnect/backoff.
-- There is no periodic retry or dead-letter mechanism.
-- There is no authentication or TLS.
-- There is no protocol version negotiation.
-- The implementation targets one relay process rather than distributed replicas.
-
-These limitations are stated explicitly rather than hidden behind stronger delivery claims.
-
----
-
-# Potential Next Steps
-
-If this were extended beyond the exercise:
-
-1. add a global queued-byte budget if a tighter memory envelope is needed (retained identities are already capped),
-2. introduce configurable resource limits,
-3. add socket registration/read/write deadlines,
-4. add stronger concurrency and stress tests,
-5. add a completed-ID/deduplication retention strategy,
-6. add strict FIFO sequencing if required,
-7. add durable storage and restart recovery if required,
-8. add authentication and TLS,
-9. add structured logging and metrics,
-10. consider a REST command API with WebSocket delivery if that better matched product requirements.
-
----
+If more work were needed, the next steps would be a tighter byte budget, runtime deadlines with slow-client tests, and stronger stale-ACK/deduplication handling. Persistence and FIFO should only be added if required, rather than expanding the exercise further.
 
 # AI Tool Usage
 
