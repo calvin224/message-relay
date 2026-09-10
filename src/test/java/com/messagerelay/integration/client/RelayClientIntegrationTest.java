@@ -30,8 +30,8 @@ class RelayClientIntegrationTest {
     @Test
     void given_no_identity_when_client_starts_then_usage_is_printed_and_process_exits() throws Exception {
         try (JavaProcess client = new JavaProcess(RelayClient.class)) {
-            assertTrue(client.awaitOutput("Usage: RelayClient")
-                    .endsWith("Usage: RelayClient <clientId> [host] [port]"));
+            assertEquals("Usage: RelayClient <clientId> [host] [port]",
+                    client.awaitOutput("Usage: RelayClient"));
             client.awaitSuccessfulExit();
         }
     }
@@ -46,6 +46,11 @@ class RelayClientIntegrationTest {
             connection.setSoTimeout(5_000);
             assertEquals(new RegisterCommand(MessageType.REGISTER, "alice"), readEvent(input, RegisterCommand.class));
             writeCommand(output, new RegisteredEvent(MessageType.REGISTERED, "alice"));
+            assertEquals("Commands:", client.awaitOutput("Commands:"));
+            assertEquals("  send <recipientId> <messageId> <body>", client.awaitOutput("  send "));
+            assertEquals("  ack <messageId>", client.awaitOutput("  ack "));
+            assertEquals("  help", client.awaitOutput("  help"));
+            assertEquals("  quit", client.awaitOutput("  quit"));
             client.awaitOutput("\"type\":\"REGISTERED\"");
 
             client.sendLine("  ");
