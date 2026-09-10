@@ -24,6 +24,7 @@ class MainIntegrationTest {
         try (JavaProcess server = new JavaProcess(ShutdownServerProcess.class, "0")) {
             String startup = server.awaitOutput("Message relay listening on port ");
             int port = Integer.parseInt(startup.substring(startup.lastIndexOf(' ') + 1));
+            assertEquals("Message relay listening on port " + port, startup);
 
             try (Socket socket = new Socket("localhost", port);
                  DataInputStream input = new DataInputStream(socket.getInputStream());
@@ -31,6 +32,7 @@ class MainIntegrationTest {
                 socket.setSoTimeout(5_000);
                 writeCommand(output, new RegisterCommand(MessageType.REGISTER, "alice"));
                 assertEquals("alice", readEvent(input, RegisteredEvent.class).clientId());
+                assertEquals("Registered client: alice", server.awaitOutput("Registered client: alice"));
 
                 server.sendLine("shutdown");
 

@@ -13,6 +13,11 @@ public class Main {
 
     public static void main(String[] args) throws Exception {
 
+        System.getProperties().putIfAbsent(
+                "java.util.logging.SimpleFormatter.format",
+                "%5$s%6$s%n"
+        );
+
         RelayServer server =
                 new RelayServer(
                         args.length > 0
